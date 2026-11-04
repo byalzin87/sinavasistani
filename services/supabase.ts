@@ -20,26 +20,63 @@ export const getDefaultConfig = (): SupabaseConfig => ({
     anonKey: HARDCODED_KEY
 });
 
+export const normalizeSupabaseUrl = (url: string): string => {
+  let trimmed = (url || '').trim();
+  if (!trimmed) return '';
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    trimmed = `https://${trimmed}`;
+  }
+  return trimmed;
+};
+
+export const isValidSupabaseConfig = (config?: SupabaseConfig | null): boolean => {
+  if (!config || !config.url || !config.anonKey) return false;
+  const url = normalizeSupabaseUrl(config.url);
+  const key = (config.anonKey || '').trim();
+  if (!url || !key) return false;
+  try {
+    const parsed = new URL(url);
+    const hasValidProtocol = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    const hasValidHost = parsed.hostname.length > 3 && parsed.hostname.includes('.');
+    const isNotPlaceholder = !parsed.hostname.startsWith('xyz.') && parsed.hostname !== 'xyz.supabase.co';
+    const isNotPlaceholderKey = !key.includes('...');
+    const hasValidKey = key.length > 20 && isNotPlaceholderKey;
+    return hasValidProtocol && hasValidHost && isNotPlaceholder && hasValidKey;
+  } catch {
+    return false;
+  }
+};
+
 let supabase: SupabaseClient | undefined;
 
 // Initialize Supabase
-export const initSupabase = (config: SupabaseConfig) => {
-  if (!config.url || !config.anonKey) throw new Error("Supabase URL ve Key gerekli.");
-  
+export const initSupabase = (config: SupabaseConfig): SupabaseClient | undefined => {
+  if (!isValidSupabaseConfig(config)) {
+    supabase = undefined;
+    return undefined;
+  }
+
+  const normalizedUrl = normalizeSupabaseUrl(config.url);
+  const trimmedKey = config.anonKey.trim();
+
   try {
-    // Always create a new client to ensure configuration updates are applied immediately.
-    supabase = createClient(config.url, config.anonKey, {
+    supabase = createClient(normalizedUrl, trimmedKey, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: false
       }
     });
-  } catch(e) {
-      console.error("Supabase init error", e);
-      throw e;
+    return supabase;
+  } catch (e) {
+    console.warn("Supabase init error:", e);
+    supabase = undefined;
+    return undefined;
   }
-  return supabase;
+};
+
+export const resetSupabase = () => {
+  supabase = undefined;
 };
 
 export const getSupabase = () => supabase;

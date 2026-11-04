@@ -2,7 +2,21 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Folder, Exam, Question, AppView, Option } from './types';
 import { fileToBase64, fileToText, getMimeType } from './services/fileUtils';
 import { parseExamFile } from './services/geminiService';
-import { initSupabase, cloudLogin, cloudRegister, cloudLogout, saveUserData, loadUserData, SupabaseConfig, isSupabaseInitialized, getDefaultConfig } from './services/supabase';
+import { 
+  initSupabase, 
+  cloudLogin, 
+  cloudRegister, 
+  cloudLogout, 
+  saveUserData, 
+  loadUserData, 
+  SupabaseConfig, 
+  isSupabaseInitialized, 
+  getDefaultConfig,
+  isValidSupabaseConfig,
+  normalizeSupabaseUrl,
+  resetSupabase,
+  getSupabase
+} from './services/supabase';
 import LoadingScreen from './components/LoadingScreen';
 import { 
   ArrowLeft, Folder as FolderIcon, Plus, FileText, Trash2, RotateCcw, 
@@ -44,13 +58,48 @@ interface ServerConfigModalProps {
 const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ isOpen, onClose, onSave, initialConfig }) => {
     const [config, setConfig] = useState<SupabaseConfig>(initialConfig);
     const [step, setStep] = useState(1);
+    const [validationError, setValidationError] = useState('');
 
-    useEffect(() => { setConfig(initialConfig) }, [initialConfig]);
+    useEffect(() => { 
+        setConfig(initialConfig);
+        setValidationError('');
+    }, [initialConfig, isOpen]);
 
     if (!isOpen) return null;
 
     const handleChange = (key: keyof SupabaseConfig, value: string) => {
+        setValidationError('');
         setConfig(prev => ({ ...prev, [key]: value }));
+    };
+
+    const handleSave = () => {
+        const trimmedUrl = config.url.trim();
+        const trimmedKey = config.anonKey.trim();
+
+        if (!trimmedUrl && !trimmedKey) {
+            onSave({ url: '', anonKey: '' });
+            return;
+        }
+
+        const normalizedConfig = {
+            url: normalizeSupabaseUrl(trimmedUrl),
+            anonKey: trimmedKey
+        };
+
+        if (!isValidSupabaseConfig(normalizedConfig)) {
+            setValidationError('Geçersiz Supabase bilgileri. Lütfen geçerli bir Proje URL (örn: https://xyz.supabase.co) ve Anon Key giriniz.');
+            setStep(2);
+            return;
+        }
+
+        setValidationError('');
+        onSave(normalizedConfig);
+    };
+
+    const handleClearConfig = () => {
+        setConfig({ url: '', anonKey: '' });
+        setValidationError('');
+        onSave({ url: '', anonKey: '' });
     };
 
     const sqlCode = `
@@ -85,6 +134,13 @@ create policy "Public profiles" on profiles for all using ( auth.uid() = id );
                         <button onClick={() => setStep(1)} className={`flex-1 py-2 text-sm font-medium rounded-md transition ${step === 1 ? 'bg-white dark:bg-gray-600 shadow text-green-600 dark:text-green-400' : 'text-gray-500'}`}>1. Kurulum Rehberi</button>
                         <button onClick={() => setStep(2)} className={`flex-1 py-2 text-sm font-medium rounded-md transition ${step === 2 ? 'bg-white dark:bg-gray-600 shadow text-green-600 dark:text-green-400' : 'text-gray-500'}`}>2. Bağlantı Bilgileri</button>
                     </div>
+
+                    {validationError && (
+                        <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl text-xs text-red-600 dark:text-red-400 flex items-center gap-2">
+                            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                            <span>{validationError}</span>
+                        </div>
+                    )}
 
                     {step === 1 && (
                         <div className="space-y-4 text-sm text-gray-600 dark:text-gray-300 pb-2">
@@ -152,10 +208,15 @@ create policy "Public profiles" on profiles for all using ( auth.uid() = id );
                 </div>
 
                 {/* Footer - Fixed */}
-                <div className="p-6 pt-4 border-t border-gray-100 dark:border-gray-700 flex-shrink-0 flex gap-3 bg-white dark:bg-gray-800 rounded-b-2xl">
-                    <button onClick={() => onSave(config)} className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-green-500/20">
+                <div className="p-6 pt-4 border-t border-gray-100 dark:border-gray-700 flex-shrink-0 flex flex-wrap gap-3 bg-white dark:bg-gray-800 rounded-b-2xl">
+                    <button onClick={handleSave} className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-green-500/20">
                         <Save className="w-4 h-4" /> Kaydet ve Bağlan
                     </button>
+                    {(config.url || config.anonKey) && (
+                        <button onClick={handleClearConfig} className="bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 font-medium py-3 px-3 rounded-xl transition text-xs">
+                            Bağlantıyı Sıfırla (Yerel Mod)
+                        </button>
+                    )}
                     <button onClick={onClose} className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-bold py-3 px-4 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition">
                         İptal
                     </button>
@@ -232,8 +293,13 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onOpenServerSettings
     }
 
     try {
-        if (isCloudMode) {
+        if (isCloudMode && isCloudConfigured) {
             // CLOUD LOGIN
+            if (!isSupabaseInitialized()) {
+                setError("Bulut servisi başlatılamadı. Lütfen sunucu ayarlarını kontrol edin veya Yerel Giriş modunu kullanın.");
+                setLoading(false);
+                return;
+            }
             if (isRegistering) {
                 await cloudRegister(trimmedUser, password);
                 await cloudLogin(trimmedUser, password); // Auto login
@@ -913,7 +979,20 @@ const App: React.FC = () => {
   const foldersRef = useRef<Folder[]>([]); 
   const isDirtyRef = useRef(false);
   const [isServerModalOpen, setIsServerModalOpen] = useState(false);
-  const [supabaseConfig, setSupabaseConfig] = useState<SupabaseConfig>(() => { const stored = localStorage.getItem(SUPABASE_CONFIG_KEY); if (stored) return JSON.parse(stored); const defaults = getDefaultConfig(); if (defaults.url && defaults.anonKey) return defaults; return { url: '', anonKey: '' }; });
+  const [supabaseConfig, setSupabaseConfig] = useState<SupabaseConfig>(() => {
+    try {
+      const stored = localStorage.getItem(SUPABASE_CONFIG_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (isValidSupabaseConfig(parsed)) return parsed;
+      }
+    } catch (e) {
+      console.warn("Stored Supabase config error", e);
+    }
+    const defaults = getDefaultConfig();
+    if (isValidSupabaseConfig(defaults)) return defaults;
+    return { url: '', anonKey: '' };
+  });
   const [isEditingFolderName, setIsEditingFolderName] = useState(false);
   const [tempFolderName, setTempFolderName] = useState("");
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
@@ -921,7 +1000,7 @@ const App: React.FC = () => {
   
   // Modals State
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
-  const [isFinishModalOpen, setIsFinishModalOpen] = useState(false); // New
+  const [isFinishModalOpen, setIsFinishModalOpen] = useState(false);
   const [examToDeleteId, setExamToDeleteId] = useState<string | null>(null);
   const [folderToDeleteId, setFolderToDeleteId] = useState<string | null>(null);
   const [uploadResults, setUploadResults] = useState<UploadResult[]>([]);
@@ -930,23 +1009,235 @@ const App: React.FC = () => {
   // Scroll Ref
   const mainScrollRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { if (supabaseConfig.url) { try { initSupabase(supabaseConfig); } catch(e) { console.error("Supabase init failed", e); } } }, [supabaseConfig]);
-  useEffect(() => { const savedTheme = localStorage.getItem('sinav_asistani_theme'); if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) { setDarkMode(true); } }, []);
-  useEffect(() => { if (currentUser) { setIsInitialized(false); const load = async () => { let loadedFolders: Folder[] = []; if (isCloudSession) { try { const { data } = await initSupabase(supabaseConfig).auth.getSession(); if (data && data.session?.user) { const userData = await loadUserData(data.session.user.id); if (userData) loadedFolders = userData; } } catch(e) { console.error("Cloud load error", e); alert("Bulut verisi çekilemedi."); } } else { const storageKey = getStorageKey(currentUser); const savedData = localStorage.getItem(storageKey); if (savedData) { try { loadedFolders = JSON.parse(savedData); } catch (e) { console.error("Data load error", e); } } } setFolders(loadedFolders); foldersRef.current = loadedFolders; setIsInitialized(true); const uiKey = getUiKey(currentUser); const savedUi = localStorage.getItem(uiKey); if (savedUi) { try { const ui = JSON.parse(savedUi); if (ui.currentView) setCurrentView(ui.currentView); if (ui.activeFolderId) setActiveFolderId(ui.activeFolderId); if (ui.activeExamId) setActiveExamId(ui.activeExamId); } catch (e) { console.error("UI state load error", e); } } const settingsKey = getSettingsKey(currentUser); const savedSettings = localStorage.getItem(settingsKey); if (savedSettings) { try { const parsedSettings = JSON.parse(savedSettings); if (parsedSettings.defaultFolderId) setDefaultFolderId(parsedSettings.defaultFolderId); } catch(e) { console.error("Settings load error", e); } } }; load(); } }, [currentUser, isCloudSession, supabaseConfig]);
-  useEffect(() => { if (isInitialized) { foldersRef.current = folders; isDirtyRef.current = true; } }, [folders, isInitialized]);
-  useEffect(() => { if(currentUser && isInitialized) { const uiKey = getUiKey(currentUser); localStorage.setItem(uiKey, JSON.stringify({ currentView, activeFolderId, activeExamId })); } }, [currentView, activeFolderId, activeExamId, currentUser, isInitialized]);
-  useEffect(() => { if (currentUser && isInitialized) { const settingsKey = getSettingsKey(currentUser); localStorage.setItem(settingsKey, JSON.stringify({ defaultFolderId })); } }, [defaultFolderId, currentUser, isInitialized]);
-  const performSave = useCallback(async () => { if(!currentUser) return; setIsSaving(true); try { if (isCloudSession && isSupabaseInitialized()) { const { data } = await initSupabase(supabaseConfig).auth.getSession(); if (data && data.session?.user) { await saveUserData(data.session.user.id, foldersRef.current); } } else { const storageKey = getStorageKey(currentUser); localStorage.setItem(storageKey, JSON.stringify(foldersRef.current)); } setLastSaved(new Date()); isDirtyRef.current = false; } catch (e) { console.error("Save failed", e); } finally { setTimeout(() => setIsSaving(false), 800); } }, [currentUser, isCloudSession, supabaseConfig]);
-  useEffect(() => { const timer = setInterval(() => { if(isDirtyRef.current && isInitialized && currentUser) { performSave(); } }, 30000); return () => clearInterval(timer); }, [currentUser, isInitialized, performSave]);
-  useEffect(() => { const handleBeforeUnload = (e: BeforeUnloadEvent) => { if (isDirtyRef.current) { if (!isCloudSession && currentUser) { const key = getStorageKey(currentUser); localStorage.setItem(key, JSON.stringify(foldersRef.current)); } e.preventDefault(); e.returnValue = ''; } }; window.addEventListener('beforeunload', handleBeforeUnload); return () => window.removeEventListener('beforeunload', handleBeforeUnload); }, [currentUser, isCloudSession]);
-  const handleInternalNavigation = () => { if (isDirtyRef.current) performSave(); };
-  useEffect(() => { if (!isInitialized) return; if (activeFolderId) { const folder = folders.find(f => f.id === activeFolderId); if (!folder) { setActiveFolderId(null); setCurrentView('DASHBOARD'); return; } if (activeExamId) { const exam = folder.exams.find(e => e.id === activeExamId); if (!exam) { setActiveExamId(null); setCurrentView('FOLDER_DETAIL'); } } } }, [folders, activeFolderId, activeExamId, isInitialized]);
-  useEffect(() => { if (darkMode) { document.documentElement.classList.add('dark'); localStorage.setItem('sinav_asistani_theme', 'dark'); } else { document.documentElement.classList.remove('dark'); localStorage.setItem('sinav_asistani_theme', 'light'); } }, [darkMode]);
-  useEffect(() => { if (activeFolderId) { const folder = folders.find(f => f.id === activeFolderId); if (folder) setTempFolderName(folder.name); } }, [activeFolderId, folders]);
+  useEffect(() => {
+    if (isValidSupabaseConfig(supabaseConfig)) {
+      try {
+        initSupabase(supabaseConfig);
+      } catch (e) {
+        console.warn("Supabase init failed", e);
+      }
+    } else {
+      resetSupabase();
+    }
+  }, [supabaseConfig]);
 
-  const handleLogin = (username: string, cloudMode: boolean) => { const trimmedUser = username.trim(); localStorage.setItem('sinav_asistani_active_user', trimmedUser); setCurrentUser(trimmedUser); setIsCloudSession(cloudMode); };
-  const handleLogout = async () => { if(isDirtyRef.current) await performSave(); if (isCloudSession) await cloudLogout(); localStorage.removeItem('sinav_asistani_active_user'); setCurrentUser(null); setFolders([]); setActiveFolderId(null); setActiveExamId(null); setDefaultFolderId(null); setCurrentView('DASHBOARD'); setIsInitialized(false); setIsCloudSession(false); };
-  const handleServerConfigSave = (config: SupabaseConfig) => { setSupabaseConfig(config); localStorage.setItem(SUPABASE_CONFIG_KEY, JSON.stringify(config)); setIsServerModalOpen(false); };
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('sinav_asistani_theme');
+    if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      setDarkMode(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentUser) {
+      setIsInitialized(false);
+      const load = async () => {
+        let loadedFolders: Folder[] = [];
+        if (isCloudSession && isValidSupabaseConfig(supabaseConfig)) {
+          try {
+            const client = getSupabase() || initSupabase(supabaseConfig);
+            if (client) {
+              const { data } = await client.auth.getSession();
+              if (data && data.session?.user) {
+                const userData = await loadUserData(data.session.user.id);
+                if (userData) loadedFolders = userData;
+              }
+            }
+          } catch(e) {
+            console.error("Cloud load error", e);
+          }
+        }
+        
+        if (loadedFolders.length === 0) {
+          const storageKey = getStorageKey(currentUser);
+          const savedData = localStorage.getItem(storageKey);
+          if (savedData) {
+            try {
+              loadedFolders = JSON.parse(savedData);
+            } catch (e) {
+              console.error("Data load error", e);
+            }
+          }
+        }
+        
+        setFolders(loadedFolders);
+        foldersRef.current = loadedFolders;
+        setIsInitialized(true);
+        
+        const uiKey = getUiKey(currentUser);
+        const savedUi = localStorage.getItem(uiKey);
+        if (savedUi) {
+          try {
+            const ui = JSON.parse(savedUi);
+            if (ui.currentView) setCurrentView(ui.currentView);
+            if (ui.activeFolderId) setActiveFolderId(ui.activeFolderId);
+            if (ui.activeExamId) setActiveExamId(ui.activeExamId);
+          } catch (e) {
+            console.error("UI state load error", e);
+          }
+        }
+        
+        const settingsKey = getSettingsKey(currentUser);
+        const savedSettings = localStorage.getItem(settingsKey);
+        if (savedSettings) {
+          try {
+            const parsedSettings = JSON.parse(savedSettings);
+            if (parsedSettings.defaultFolderId) setDefaultFolderId(parsedSettings.defaultFolderId);
+          } catch(e) {
+            console.error("Settings load error", e);
+          }
+        }
+      };
+      load();
+    }
+  }, [currentUser, isCloudSession, supabaseConfig]);
+
+  useEffect(() => {
+    if (isInitialized) {
+      foldersRef.current = folders;
+      isDirtyRef.current = true;
+    }
+  }, [folders, isInitialized]);
+
+  useEffect(() => {
+    if (currentUser && isInitialized) {
+      const uiKey = getUiKey(currentUser);
+      localStorage.setItem(uiKey, JSON.stringify({ currentView, activeFolderId, activeExamId }));
+    }
+  }, [currentView, activeFolderId, activeExamId, currentUser, isInitialized]);
+
+  useEffect(() => {
+    if (currentUser && isInitialized) {
+      const settingsKey = getSettingsKey(currentUser);
+      localStorage.setItem(settingsKey, JSON.stringify({ defaultFolderId }));
+    }
+  }, [defaultFolderId, currentUser, isInitialized]);
+
+  const performSave = useCallback(async () => {
+    if(!currentUser) return;
+    setIsSaving(true);
+    try {
+      if (isCloudSession && isSupabaseInitialized()) {
+        const client = getSupabase();
+        if (client) {
+          const { data } = await client.auth.getSession();
+          if (data && data.session?.user) {
+            await saveUserData(data.session.user.id, foldersRef.current);
+          }
+        }
+      }
+      const storageKey = getStorageKey(currentUser);
+      localStorage.setItem(storageKey, JSON.stringify(foldersRef.current));
+      setLastSaved(new Date());
+      isDirtyRef.current = false;
+    } catch (e) {
+      console.error("Save failed", e);
+    } finally {
+      setTimeout(() => setIsSaving(false), 800);
+    }
+  }, [currentUser, isCloudSession]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (isDirtyRef.current && isInitialized && currentUser) {
+        performSave();
+      }
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [currentUser, isInitialized, performSave]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirtyRef.current) {
+        if (!isCloudSession && currentUser) {
+          const key = getStorageKey(currentUser);
+          localStorage.setItem(key, JSON.stringify(foldersRef.current));
+        }
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [currentUser, isCloudSession]);
+
+  const handleInternalNavigation = () => {
+    if (isDirtyRef.current) performSave();
+  };
+
+  useEffect(() => {
+    if (!isInitialized) return;
+    if (activeFolderId) {
+      const folder = folders.find(f => f.id === activeFolderId);
+      if (!folder) {
+        setActiveFolderId(null);
+        setCurrentView('DASHBOARD');
+        return;
+      }
+      if (activeExamId) {
+        const exam = folder.exams.find(e => e.id === activeExamId);
+        if (!exam) {
+          setActiveExamId(null);
+          setCurrentView('FOLDER_DETAIL');
+        }
+      }
+    }
+  }, [folders, activeFolderId, activeExamId, isInitialized]);
+
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('sinav_asistani_theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('sinav_asistani_theme', 'light');
+    }
+  }, [darkMode]);
+
+  useEffect(() => {
+    if (activeFolderId) {
+      const folder = folders.find(f => f.id === activeFolderId);
+      if (folder) setTempFolderName(folder.name);
+    }
+  }, [activeFolderId, folders]);
+
+  const handleLogin = (username: string, cloudMode: boolean) => {
+    const trimmedUser = username.trim();
+    localStorage.setItem('sinav_asistani_active_user', trimmedUser);
+    setCurrentUser(trimmedUser);
+    setIsCloudSession(cloudMode);
+  };
+
+  const handleLogout = async () => {
+    if (isDirtyRef.current) await performSave();
+    if (isCloudSession) await cloudLogout();
+    localStorage.removeItem('sinav_asistani_active_user');
+    setCurrentUser(null);
+    setFolders([]);
+    setActiveFolderId(null);
+    setActiveExamId(null);
+    setDefaultFolderId(null);
+    setCurrentView('DASHBOARD');
+    setIsInitialized(false);
+    setIsCloudSession(false);
+  };
+
+  const handleServerConfigSave = (config: SupabaseConfig) => {
+    if (isValidSupabaseConfig(config)) {
+      const cleanConfig = {
+        url: normalizeSupabaseUrl(config.url),
+        anonKey: config.anonKey.trim()
+      };
+      setSupabaseConfig(cleanConfig);
+      localStorage.setItem(SUPABASE_CONFIG_KEY, JSON.stringify(cleanConfig));
+      initSupabase(cleanConfig);
+    } else {
+      setSupabaseConfig({ url: '', anonKey: '' });
+      localStorage.removeItem(SUPABASE_CONFIG_KEY);
+      resetSupabase();
+    }
+    setIsServerModalOpen(false);
+  };
   const toggleDarkMode = () => setDarkMode(!darkMode);
   const createFolder = () => { const newId = crypto.randomUUID(); const defaultName = "Yeni Klasör"; const newFolder: Folder = { id: newId, name: defaultName, exams: [] }; setFolders(prev => [...prev, newFolder]); setEditingFolderId(newId); setEditFolderTempName(defaultName); };
   const requestDeleteFolder = (e: React.MouseEvent, id: string) => { e.stopPropagation(); setFolderToDeleteId(id); };
@@ -1268,7 +1559,7 @@ const App: React.FC = () => {
     );
   };
 
-  if (!currentUser) { return (<> <div className="absolute top-4 right-4 z-50"><button onClick={toggleDarkMode} className="p-2 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors" title={darkMode ? "Aydınlık Mod" : "Karanlık Mod"}>{darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button></div><ServerConfigModal isOpen={isServerModalOpen} onClose={() => setIsServerModalOpen(false)} onSave={handleServerConfigSave} initialConfig={supabaseConfig} /><LoginScreen onLogin={handleLogin} onOpenServerSettings={() => setIsServerModalOpen(true)} isCloudConfigured={!!supabaseConfig.url}/></>); }
+  if (!currentUser) { return (<> <div className="absolute top-4 right-4 z-50"><button onClick={toggleDarkMode} className="p-2 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors" title={darkMode ? "Aydınlık Mod" : "Karanlık Mod"}>{darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button></div><ServerConfigModal isOpen={isServerModalOpen} onClose={() => setIsServerModalOpen(false)} onSave={handleServerConfigSave} initialConfig={supabaseConfig} /><LoginScreen onLogin={handleLogin} onOpenServerSettings={() => setIsServerModalOpen(true)} isCloudConfigured={isValidSupabaseConfig(supabaseConfig) && isSupabaseInitialized()}/></>); }
   if (currentView === 'LOADING') { return <LoadingScreen message={loadingMessage || undefined} />; }
   
   const examToDeleteTitle = examToDeleteId ? folders.find(f => f.id === activeFolderId)?.exams.find(e => e.id === examToDeleteId)?.title : "";

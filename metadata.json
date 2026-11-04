@@ -1,0 +1,8 @@
+{
+  "name": "Sınav Asistanı Final",
+  "description": "Sınavlara hazırlanmak için yapay zeka destekli soru-cevap ve deneme yönetimi uygulaması.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

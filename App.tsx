@@ -1498,16 +1498,20 @@ const App: React.FC = () => {
         if (file.name.toLowerCase().endsWith('.pdf') || originalMime === 'application/pdf') {
           setLoadingMessage(`PDF taranıyor ve metinler ayıklanıyor (${i + 1}/${files.length}): ${file.name}`);
           try {
-            extractedPdfText = await extractTextFromPdf(file);
+            const pdfResult = await extractTextFromPdf(file);
+            if (pdfResult.isClean && pdfResult.text && pdfResult.text.trim().length > 30) {
+              extractedPdfText = pdfResult.text;
+              data = extractedPdfText;
+              mimeType = 'text/plain';
+            } else {
+              // Text was garbled/shifted beyond repair or empty, fallback to visual PDF
+              data = await fileToBase64(file);
+              mimeType = 'application/pdf';
+            }
           } catch (pdfErr) {
             console.warn('PDF text extraction error:', pdfErr);
-          }
-
-          if (extractedPdfText && extractedPdfText.trim().length > 30) {
-            data = extractedPdfText;
-            mimeType = 'text/plain';
-          } else {
             data = await fileToBase64(file);
+            mimeType = 'application/pdf';
           }
         } else if (mimeType.startsWith('text/') || mimeType === 'application/json') {
           data = await fileToText(file);

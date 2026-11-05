@@ -33,6 +33,7 @@ AŞAMA 2: SORULARI VE ŞIKLARI ÇIKAR
 AŞAMA 3: DİKKAT EDİLECEK HUSUSLAR
 - Tüm soruları eksiksiz çıkarmaya çalış.
 - Başlık alanına sınavın adını (örnek: "TYT Türkçe Deneme Sınavı", "Matematik Testi 1") yaz.
+- Türkçe karakter ve font kodlama bozulmalarını düzelt: Belgedeki harfler veya font kodlamaları kaymışsa (örnek: bozuk semboller veya şifreli gibi görünen harfler), görsel OCR ve bağlam bilgisiyle metinleri düzgün, temiz ve doğru Türkçe imla kurallarına (ç, ğ, ı, ö, ş, ü) uygun şekilde dönüştür.
 `;
 
 function getApiKey(): string {

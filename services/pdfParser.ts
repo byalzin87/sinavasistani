@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import { cleanAndDescramblePdfText } from './textDescrambler';
 
 // Configure worker using CDN fallback
 if (typeof window !== 'undefined') {
@@ -9,22 +10,31 @@ if (typeof window !== 'undefined') {
   }
 }
 
+export interface PdfTextExtractionResult {
+  text: string;
+  isClean: boolean;
+  shiftApplied?: number;
+}
+
 /**
  * Extracts plain text from an uploaded PDF file directly in the browser.
- * Works completely offline without needing any AI server or API key!
+ * Configured with CMap fonts and automatic font encoding descrambler.
  * Protected with a timeout to prevent UI freezes.
  */
-export async function extractTextFromPdf(file: File): Promise<string> {
-  const timeoutPromise = new Promise<string>((resolve) => {
-    setTimeout(() => resolve(''), 10000);
+export async function extractTextFromPdf(file: File): Promise<PdfTextExtractionResult> {
+  const timeoutPromise = new Promise<PdfTextExtractionResult>((resolve) => {
+    setTimeout(() => resolve({ text: '', isClean: false }), 10000);
   });
 
-  const extractionPromise = (async () => {
+  const extractionPromise = (async (): Promise<PdfTextExtractionResult> => {
     try {
       const arrayBuffer = await file.arrayBuffer();
       const loadingTask = pdfjsLib.getDocument({
         data: new Uint8Array(arrayBuffer),
-        useSystemFonts: true
+        useSystemFonts: true,
+        cMapUrl: `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
+        cMapPacked: true,
+        standardFontDataUrl: `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`
       });
 
       const pdf = await loadingTask.promise;
@@ -61,10 +71,15 @@ export async function extractTextFromPdf(file: File): Promise<string> {
         pageTexts.push(pageLines.join('\n'));
       }
 
-      return pageTexts.join('\n\n');
+      const rawCombined = pageTexts.join('\n\n');
+
+      // Run intelligent descrambler to fix Caesar-shifted subset fonts and custom encodings
+      const descrambled = cleanAndDescramblePdfText(rawCombined);
+
+      return descrambled;
     } catch (error) {
       console.error('Failed to extract text from PDF locally:', error);
-      return '';
+      return { text: '', isClean: false };
     }
   })();
 

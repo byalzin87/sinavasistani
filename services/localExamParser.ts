@@ -1,4 +1,5 @@
 import { Question } from '../types';
+import { cleanAndDescramblePdfText } from './textDescrambler';
 
 export interface LocalParseResult {
   title: string;
@@ -10,9 +11,11 @@ export interface LocalParseResult {
  * Parses an exam from a plain text, markdown, or JSON string locally
  * without requiring any external AI API or server.
  * Handles both multiline and inline options (A, B, C, D, E) and tabular answer keys.
+ * Automatically descrambles Caesar-shifted subset fonts and custom Turkish encodings.
  */
 export function parseTextExamLocally(rawContent: string, fileName?: string): LocalParseResult {
-  const content = rawContent.trim();
+  const cleaned = cleanAndDescramblePdfText(rawContent).text;
+  const content = cleaned.trim();
   const defaultTitle = fileName ? fileName.replace(/\.[^/.]+$/, '') : 'Yeni Sınav';
 
   if (!content) {

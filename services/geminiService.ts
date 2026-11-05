@@ -12,12 +12,14 @@ export interface ParseExamResponse {
 /**
  * Sends the exam document (PDF, image, or text) to the server-side Gemini endpoint
  * to extract questions, multiple-choice options, and map the answer key.
- * If server-side API key is missing, provides free offline text fallback.
+ * If server-side API key is missing or server fails, automatically falls back to
+ * zero-cost client-side local parser.
  */
 export const parseExamFile = async (
   data: string,
   mimeType: string,
-  fileName?: string
+  fileName?: string,
+  fallbackText?: string
 ): Promise<ParseExamResponse> => {
   const isText =
     mimeType.startsWith('text/') ||
@@ -25,6 +27,8 @@ export const parseExamFile = async (
     mimeType === 'text/plain' ||
     mimeType === 'text/markdown' ||
     mimeType === 'text/csv';
+
+  const textToFallback = isText ? data : (fallbackText || '');
 
   try {
     const response = await fetch('/api/parse-exam', {
@@ -46,9 +50,9 @@ export const parseExamFile = async (
       result = rawText ? JSON.parse(rawText) : {};
     } catch {
       console.error('Non-JSON response from /api/parse-exam:', rawText);
-      // If it's a text file and server returned error/HTML, run local parser
-      if (isText) {
-        const local = parseTextExamLocally(data, fileName);
+      // Fallback to local parser if text content is available
+      if (textToFallback && textToFallback.trim().length > 0) {
+        const local = parseTextExamLocally(textToFallback, fileName);
         if (local.questions.length > 0) {
           return local;
         }
@@ -74,11 +78,11 @@ export const parseExamFile = async (
       const isMissingKey =
         result?.code === 'MISSING_GEMINI_API_KEY' ||
         String(errorMsg).includes('GEMINI_API_KEY') ||
-        String(errorMsg).includes('ortam değişkeni bulunamadı');
+        String(errorMsg).includes('ortam değişkeni');
 
-      // If it's a text file, try client-side local parser before giving up!
-      if (isText) {
-        const local = parseTextExamLocally(data, fileName);
+      // Check local parser fallback first before returning error!
+      if (textToFallback && textToFallback.trim().length > 0) {
+        const local = parseTextExamLocally(textToFallback, fileName);
         if (local.questions.length > 0) {
           return local;
         }
@@ -90,7 +94,7 @@ export const parseExamFile = async (
         questions: [],
         isMissingApiKey: isMissingKey,
         errorMessage: isMissingKey
-          ? 'Vercel üzerinde GEMINI_API_KEY ortam değişkeni bulunamadı. PDF veya resim gibi görsel belgeleri işlemek için Google AI Studio üzerinden tamamen ÜCRETSİZ bir API anahtarı ekleyebilir veya sınavınızı .txt formatında doğrudan yükleyebilirsiniz.'
+          ? 'Vercel üzerinde GEMINI_API_KEY ortam değişkeni bulunamadı. Taranmış görsel PDF dosyalarını okumak için Google AI Studio üzerinden ücretsiz bir API anahtarı ekleyebilir veya dijital metin içeren bir PDF/TXT dosyası yükleyebilirsiniz.'
           : errorMsg
       };
     }
@@ -108,6 +112,14 @@ export const parseExamFile = async (
       userSelection: null
     }));
 
+    // If server returned 0 questions but we have fallback text, try local parser
+    if (questions.length === 0 && textToFallback && textToFallback.trim().length > 0) {
+      const local = parseTextExamLocally(textToFallback, fileName);
+      if (local.questions.length > 0) {
+        return local;
+      }
+    }
+
     return {
       title: result.title || fileName || 'Yeni Sınav',
       questions,
@@ -116,9 +128,9 @@ export const parseExamFile = async (
   } catch (error: any) {
     console.error('parseExamFile network error:', error);
 
-    // If text file and network failed, run local parser
-    if (isText) {
-      const local = parseTextExamLocally(data, fileName);
+    // If network failed, run local parser
+    if (textToFallback && textToFallback.trim().length > 0) {
+      const local = parseTextExamLocally(textToFallback, fileName);
       if (local.questions.length > 0) {
         return local;
       }

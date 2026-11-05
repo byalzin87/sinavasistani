@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Folder, Exam, Question, AppView, Option } from './types';
 import { fileToBase64, fileToText, getMimeType } from './services/fileUtils';
 import { parseExamFile } from './services/geminiService';
+import { extractTextFromPdf } from './services/pdfParser';
+import { parseTextExamLocally } from './services/localExamParser';
 import { 
   initSupabase, 
   cloudLogin, 
@@ -1488,15 +1490,33 @@ const App: React.FC = () => {
       const file = files[i];
       setLoadingMessage(`Dosya inceleniyor ve sorular çıkarılıyor (${i + 1}/${files.length}): ${file.name}`);
       try {
-        const mimeType = getMimeType(file);
+        const originalMime = getMimeType(file);
+        let mimeType = originalMime;
         let data = '';
-        if (mimeType.startsWith('text/') || mimeType === 'application/json') {
+        let extractedPdfText = '';
+
+        if (file.name.toLowerCase().endsWith('.pdf') || originalMime === 'application/pdf') {
+          setLoadingMessage(`PDF taranıyor ve metinler ayıklanıyor (${i + 1}/${files.length}): ${file.name}`);
+          try {
+            extractedPdfText = await extractTextFromPdf(file);
+          } catch (pdfErr) {
+            console.warn('PDF text extraction error:', pdfErr);
+          }
+
+          if (extractedPdfText && extractedPdfText.trim().length > 30) {
+            data = extractedPdfText;
+            mimeType = 'text/plain';
+          } else {
+            data = await fileToBase64(file);
+          }
+        } else if (mimeType.startsWith('text/') || mimeType === 'application/json') {
           data = await fileToText(file);
         } else {
           data = await fileToBase64(file);
         }
         
-        const parsedData = await parseExamFile(data, mimeType, file.name);
+        setLoadingMessage(`Sorular ve cevaplar çıkarılıyor (${i + 1}/${files.length}): ${file.name}`);
+        const parsedData = await parseExamFile(data, mimeType, file.name, extractedPdfText);
         
         if (parsedData.questions.length === 0) {
           results.push({

@@ -9,10 +9,15 @@ export interface LocalParseResult {
 /**
  * Parses an exam from a plain text, markdown, or JSON string locally
  * without requiring any external AI API or server.
+ * Handles both multiline and inline options (A, B, C, D, E) and tabular answer keys.
  */
 export function parseTextExamLocally(rawContent: string, fileName?: string): LocalParseResult {
   const content = rawContent.trim();
   const defaultTitle = fileName ? fileName.replace(/\.[^/.]+$/, '') : 'Yeni Sınav';
+
+  if (!content) {
+    return { title: defaultTitle, questions: [] };
+  }
 
   // 1. Try parsing as JSON first
   if (content.startsWith('{') || content.startsWith('[')) {
@@ -32,8 +37,7 @@ export function parseTextExamLocally(rawContent: string, fileName?: string): Loc
                   if (labelMatch) {
                     return { label: labelMatch[1].toUpperCase(), text: labelMatch[2].trim() };
                   }
-                  const defaultLabel = String.fromCharCode(65 + oIdx);
-                  return { label: defaultLabel, text: opt.trim() };
+                  return { label: String.fromCharCode(65 + oIdx), text: opt.trim() };
                 }
                 return {
                   label: String(opt.label || String.fromCharCode(65 + oIdx)).toUpperCase(),
@@ -58,30 +62,30 @@ export function parseTextExamLocally(rawContent: string, fileName?: string): Loc
     }
   }
 
-  // 2. Parse plain text / markdown
+  // 2. Parse plain text / markdown / PDF extracted text
   // Look for Answer Key block
   let detectedAnswerKeyRawContent: string | null = null;
   const answerKeyMap: Record<number, string> = {};
 
-  const answerKeyRegex = /(?:cevap\s*anahtar[ıi]|yan[ıi]tlar|answer\s*key)[\s:]*([\s\S]+?)(?=$|\n\s*\n\s*\n)/i;
+  const answerKeyRegex = /(?:cevap\s*anahtar[ıi]|yan[ıi]t\s*anahtar[ıi]|yan[ıi]tlar|answer\s*key)[\s:]*([\s\S]+?)(?=$|\n\s*\n\s*\n)/i;
   const keyMatch = content.match(answerKeyRegex);
   if (keyMatch) {
     detectedAnswerKeyRawContent = keyMatch[0].trim();
-    const keyPairs = keyMatch[1].matchAll(/(\d+)[\s\.\-\):]+([A-Ea-e])/g);
+    // Match "1-A", "1.A", "1: A", "1) A", "1 A"
+    const keyPairs = keyMatch[1].matchAll(/(\d{1,3})[\s\.\-\):]+([A-Ea-e])\b/g);
     for (const kp of keyPairs) {
-      const qNum = parseInt(kp[1], 10);
-      answerKeyMap[qNum] = kp[2].toUpperCase();
+      answerKeyMap[parseInt(kp[1], 10)] = kp[2].toUpperCase();
     }
   }
 
-  // Remove answer key section from questions body to avoid confusion
+  // Remove answer key section from questions body to avoid confusing question parsers
   let bodyWithoutKey = content;
   if (keyMatch && keyMatch.index !== undefined) {
     bodyWithoutKey = content.slice(0, keyMatch.index) + content.slice(keyMatch.index + keyMatch[0].length);
   }
 
   // Split into question blocks: match lines starting with "1.", "1)", "Soru 1:", "1 -", etc.
-  const questionBlocks = bodyWithoutKey.split(/(?:^|\n)(?=(?:Soru\s*)?\d+[\.\)\-:]\s+)/i);
+  const questionBlocks = bodyWithoutKey.split(/(?:^|\n)(?=(?:Soru\s*)?\d{1,3}[\.\)\-:]\s+)/i);
 
   const questions: Question[] = [];
 
@@ -90,31 +94,47 @@ export function parseTextExamLocally(rawContent: string, fileName?: string): Loc
     if (!trimmed) continue;
 
     // Check if this block starts with a question number
-    const headerMatch = trimmed.match(/^(?:Soru\s*)?(\d+)[\.\)\-:]\s*([\s\S]+)$/i);
+    const headerMatch = trimmed.match(/^(?:Soru\s*)?(\d{1,3})[\.\)\-:]\s*([\s\S]+)$/i);
     if (!headerMatch) continue;
 
     const questionNumber = parseInt(headerMatch[1], 10);
-    const fullQuestionContent = headerMatch[2].trim();
+    const fullContent = headerMatch[2].trim();
 
-    // Find options inside this block (A), B), C), D), E) or A., B. etc.)
-    const optionMatches = [
-      ...fullQuestionContent.matchAll(/(?:^|\n)\s*([A-Ea-e])[\.\)\-\:]\s*([^\n]+(?:\n(?!\s*[A-Ea-e][\.\)\-\:]|\s*(?:Cevap|Yanıt|Doğru)) [^\n]+)*)/g)
-    ];
+    // Find options inside this block
+    // Supports both multiline (A) ... \n B) ...) and inline (A) ... B) ... C) ...)
+    const optionRegex = /(?:^|\n|\s{2,})\(?([A-Ea-e])\)?[.\-:]\s+/g;
+    const optIndices: { label: string; start: number; end: number }[] = [];
 
-    let questionText = fullQuestionContent;
+    let match: RegExpExecArray | null;
+    while ((match = optionRegex.exec(fullContent)) !== null) {
+      optIndices.push({
+        label: match[1].toUpperCase(),
+        start: match.index,
+        end: match.index + match[0].length
+      });
+    }
+
+    let questionText = fullContent;
     const options: { label: string; text: string }[] = [];
 
-    if (optionMatches.length > 0) {
-      // The text before the first option is the question text
-      const firstOptIndex = optionMatches[0].index ?? 0;
-      questionText = fullQuestionContent.substring(0, firstOptIndex).trim();
+    if (optIndices.length >= 2) {
+      // Must have at least 2 options to be recognized as options
+      questionText = fullContent.substring(0, optIndices[0].start).trim();
 
-      for (const m of optionMatches) {
-        const label = m[1].toUpperCase();
-        let optText = m[2].trim();
-        // Clean trailing answer indication if any
-        optText = optText.replace(/(?:Cevap|Yanıt|Doğru)[\s:]*[A-Ea-e].*$/i, '').trim();
-        options.push({ label, text: optText });
+      for (let i = 0; i < optIndices.length; i++) {
+        const cur = optIndices[i];
+        const next = optIndices[i + 1];
+        let optText = next
+          ? fullContent.substring(cur.end, next.start).trim()
+          : fullContent.substring(cur.end).trim();
+
+        // Remove trailing answer indicators like "Cevap: B", "Doğru: C"
+        optText = optText.replace(/(?:Doğru\s*Cevap|Cevap|Yanıt)[\s:]*[A-Ea-e].*$/i, '').trim();
+
+        options.push({
+          label: cur.label,
+          text: optText
+        });
       }
     }
 

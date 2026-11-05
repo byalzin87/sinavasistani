@@ -1,21 +1,31 @@
 import { Question } from '../types';
+import { parseTextExamLocally } from './localExamParser';
 
 export interface ParseExamResponse {
   title: string;
   questions: Question[];
   detectedAnswerKeyRawContent?: string | null;
   errorMessage?: string;
+  isMissingApiKey?: boolean;
 }
 
 /**
  * Sends the exam document (PDF, image, or text) to the server-side Gemini endpoint
  * to extract questions, multiple-choice options, and map the answer key.
+ * If server-side API key is missing, provides free offline text fallback.
  */
 export const parseExamFile = async (
   data: string,
   mimeType: string,
   fileName?: string
 ): Promise<ParseExamResponse> => {
+  const isText =
+    mimeType.startsWith('text/') ||
+    mimeType === 'application/json' ||
+    mimeType === 'text/plain' ||
+    mimeType === 'text/markdown' ||
+    mimeType === 'text/csv';
+
   try {
     const response = await fetch('/api/parse-exam', {
       method: 'POST',
@@ -35,8 +45,15 @@ export const parseExamFile = async (
     try {
       result = rawText ? JSON.parse(rawText) : {};
     } catch {
-      // Server returned HTML or plain text (e.g., Vercel 404 or proxy error)
       console.error('Non-JSON response from /api/parse-exam:', rawText);
+      // If it's a text file and server returned error/HTML, run local parser
+      if (isText) {
+        const local = parseTextExamLocally(data, fileName);
+        if (local.questions.length > 0) {
+          return local;
+        }
+      }
+
       if (response.status === 404 || rawText.includes('The page could not be found')) {
         return {
           title: 'Hata: API Uç Noktası Bulunamadı',
@@ -54,11 +71,27 @@ export const parseExamFile = async (
 
     if (!response.ok) {
       const errorMsg = result?.error || `Sunucu hatası (${response.status})`;
+      const isMissingKey =
+        result?.code === 'MISSING_GEMINI_API_KEY' ||
+        String(errorMsg).includes('GEMINI_API_KEY') ||
+        String(errorMsg).includes('ortam değişkeni bulunamadı');
+
+      // If it's a text file, try client-side local parser before giving up!
+      if (isText) {
+        const local = parseTextExamLocally(data, fileName);
+        if (local.questions.length > 0) {
+          return local;
+        }
+      }
+
       console.error('Parse exam server error:', errorMsg);
       return {
-        title: 'Hata: Dosya Okunamadı',
+        title: isMissingKey ? 'GEMINI_API_KEY Gerekli' : 'Hata: Dosya Okunamadı',
         questions: [],
-        errorMessage: errorMsg
+        isMissingApiKey: isMissingKey,
+        errorMessage: isMissingKey
+          ? 'Vercel üzerinde GEMINI_API_KEY ortam değişkeni bulunamadı. PDF veya resim gibi görsel belgeleri işlemek için Google AI Studio üzerinden tamamen ÜCRETSİZ bir API anahtarı ekleyebilir veya sınavınızı .txt formatında doğrudan yükleyebilirsiniz.'
+          : errorMsg
       };
     }
 
@@ -82,6 +115,15 @@ export const parseExamFile = async (
     };
   } catch (error: any) {
     console.error('parseExamFile network error:', error);
+
+    // If text file and network failed, run local parser
+    if (isText) {
+      const local = parseTextExamLocally(data, fileName);
+      if (local.questions.length > 0) {
+        return local;
+      }
+    }
+
     return {
       title: 'Hata: Bağlantı Kurulamadı',
       questions: [],

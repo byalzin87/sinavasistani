@@ -35,12 +35,161 @@ AŞAMA 3: DİKKAT EDİLECEK HUSUSLAR
 - Başlık alanına sınavın adını (örnek: "TYT Türkçe Deneme Sınavı", "Matematik Testi 1") yaz.
 `;
 
+function getApiKey(): string {
+  return (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.VITE_GEMINI_API_KEY ||
+    process.env.GOOGLE_GENAI_API_KEY ||
+    process.env.GEMINI_KEY ||
+    process.env.API_KEY ||
+    ''
+  ).trim();
+}
+
+/**
+ * Free rule-based text/JSON parser used as offline / free alternative
+ * when no Gemini API key is configured.
+ */
+function parseTextExamLocally(rawContent: string, fileName?: string) {
+  const content = rawContent.trim();
+  const defaultTitle = fileName ? fileName.replace(/\.[^/.]+$/, '') : 'Yeni Sınav';
+
+  // 1. JSON check
+  if (content.startsWith('{') || content.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(content);
+      const title = parsed.title || defaultTitle;
+      const rawQuestions = Array.isArray(parsed) ? parsed : (parsed.questions || []);
+
+      if (Array.isArray(rawQuestions) && rawQuestions.length > 0) {
+        const questions = rawQuestions.map((q: any, idx: number) => ({
+          id: typeof q.id === 'number' ? q.id : idx + 1,
+          text: q.text || q.question || 'Soru metni',
+          options: Array.isArray(q.options)
+            ? q.options.map((opt: any, oIdx: number) => {
+                if (typeof opt === 'string') {
+                  const labelMatch = opt.match(/^([A-Ea-e])[\.\)\-\:]\s*(.*)$/);
+                  if (labelMatch) {
+                    return { label: labelMatch[1].toUpperCase(), text: labelMatch[2].trim() };
+                  }
+                  return { label: String.fromCharCode(65 + oIdx), text: opt.trim() };
+                }
+                return {
+                  label: String(opt.label || String.fromCharCode(65 + oIdx)).toUpperCase(),
+                  text: String(opt.text || opt.value || '').trim()
+                };
+              })
+            : [],
+          correctAnswerLabel: q.correctAnswerLabel || q.answer || q.correctAnswer
+            ? String(q.correctAnswerLabel || q.answer || q.correctAnswer).trim().toUpperCase()
+            : null,
+          userSelection: null
+        }));
+
+        return {
+          title,
+          questions,
+          detectedAnswerKeyRawContent: parsed.detectedAnswerKeyRawContent || 'JSON formatından yerel olarak okundu'
+        };
+      }
+    } catch {
+      // not valid JSON
+    }
+  }
+
+  // 2. Plain text / Markdown
+  let detectedAnswerKeyRawContent: string | null = null;
+  const answerKeyMap: Record<number, string> = {};
+
+  const keyMatch = content.match(/(?:cevap\s*anahtar[ıi]|yan[ıi]tlar|answer\s*key)[\s:]*([\s\S]+?)(?=$|\n\s*\n\s*\n)/i);
+  if (keyMatch) {
+    detectedAnswerKeyRawContent = keyMatch[0].trim();
+    const keyPairs = keyMatch[1].matchAll(/(\d+)[\s\.\-\):]+([A-Ea-e])/g);
+    for (const kp of keyPairs) {
+      answerKeyMap[parseInt(kp[1], 10)] = kp[2].toUpperCase();
+    }
+  }
+
+  let bodyWithoutKey = content;
+  if (keyMatch && keyMatch.index !== undefined) {
+    bodyWithoutKey = content.slice(0, keyMatch.index) + content.slice(keyMatch.index + keyMatch[0].length);
+  }
+
+  const questionBlocks = bodyWithoutKey.split(/(?:^|\n)(?=(?:Soru\s*)?\d+[\.\)\-:]\s+)/i);
+  const questions: any[] = [];
+
+  for (const block of questionBlocks) {
+    const trimmed = block.trim();
+    if (!trimmed) continue;
+
+    const headerMatch = trimmed.match(/^(?:Soru\s*)?(\d+)[\.\)\-:]\s*([\s\S]+)$/i);
+    if (!headerMatch) continue;
+
+    const questionNumber = parseInt(headerMatch[1], 10);
+    const fullContent = headerMatch[2].trim();
+
+    const optionMatches = [
+      ...fullContent.matchAll(/(?:^|\n)\s*([A-Ea-e])[\.\)\-\:]\s*([^\n]+(?:\n(?!\s*[A-Ea-e][\.\)\-\:]|\s*(?:Cevap|Yanıt|Doğru)) [^\n]+)*)/g)
+    ];
+
+    let questionText = fullContent;
+    const options: { label: string; text: string }[] = [];
+
+    if (optionMatches.length > 0) {
+      questionText = fullContent.substring(0, optionMatches[0].index ?? 0).trim();
+      for (const m of optionMatches) {
+        let optText = m[2].trim().replace(/(?:Cevap|Yanıt|Doğru)[\s:]*[A-Ea-e].*$/i, '').trim();
+        options.push({ label: m[1].toUpperCase(), text: optText });
+      }
+    }
+
+    let correctAnswerLabel: string | null = answerKeyMap[questionNumber] || null;
+    if (!correctAnswerLabel) {
+      const inlineKeyMatch = trimmed.match(/(?:Doğru\s*Cevap|Cevap|Yanıt)[\s:]*([A-Ea-e])/i);
+      if (inlineKeyMatch) {
+        correctAnswerLabel = inlineKeyMatch[1].toUpperCase();
+      }
+    }
+
+    questionText = questionText.replace(/(?:Doğru\s*Cevap|Cevap|Yanıt)[\s:]*[A-Ea-e].*$/i, '').trim();
+
+    if (questionText || options.length > 0) {
+      questions.push({
+        id: questionNumber || questions.length + 1,
+        text: questionText || `Soru ${questionNumber}`,
+        options,
+        correctAnswerLabel,
+        userSelection: null
+      });
+    }
+  }
+
+  return {
+    title: defaultTitle,
+    questions,
+    detectedAnswerKeyRawContent
+  };
+}
+
 async function parseExamWithGemini(input: { data: string; mimeType: string; fileName?: string }) {
   const { data, mimeType, fileName } = input;
+  const isText = mimeType.startsWith('text/') || mimeType === 'application/json';
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = getApiKey();
   if (!apiKey) {
-    throw new Error('Sunucuda GEMINI_API_KEY ortam değişkeni tanımlı değil. Lütfen geçerli bir API anahtarı sağlayın.');
+    if (isText) {
+      const localResult = parseTextExamLocally(data, fileName);
+      if (localResult.questions.length > 0) {
+        return localResult;
+      }
+    }
+
+    const missingKeyError: any = new Error(
+      'Sunucuda GEMINI_API_KEY ortam değişkeni tanımlı değil. PDF veya resim gibi görsel belgeleri işlemek için Google AI Studio üzerinden tamamen ÜCRETSİZ bir API anahtarı alıp ortam değişkenlerine GEMINI_API_KEY olarak ekleyiniz.'
+    );
+    missingKeyError.code = 'MISSING_GEMINI_API_KEY';
+    throw missingKeyError;
   }
 
   const ai = new GoogleGenAI({
@@ -52,7 +201,6 @@ async function parseExamWithGemini(input: { data: string; mimeType: string; file
     }
   });
 
-  const isText = mimeType.startsWith('text/') || mimeType === 'application/json';
   const parts: any[] = [];
 
   if (isText) {
@@ -161,6 +309,13 @@ async function parseExamWithGemini(input: { data: string; mimeType: string; file
   try {
     response = await generateWithRetry();
   } catch (err: any) {
+    if (isText) {
+      const fallback = parseTextExamLocally(data, fileName);
+      if (fallback.questions.length > 0) {
+        return fallback;
+      }
+    }
+
     let errorMessage = err?.message || 'Yapay zeka modeliyle iletişim kurulurken bir hata oluştu.';
     try {
       const parsed = JSON.parse(errorMessage);
@@ -239,8 +394,10 @@ app.post('/api/parse-exam', async (req, res) => {
     return res.json(result);
   } catch (err: any) {
     console.error('Sınav ayrıştırma hatası:', err);
-    return res.status(500).json({
-      error: err?.message || 'Sınav dosyası işlenirken bir sunucu hatası oluştu.'
+    const isMissingKey = err?.code === 'MISSING_GEMINI_API_KEY' || String(err?.message).includes('GEMINI_API_KEY');
+    return res.status(isMissingKey ? 400 : 500).json({
+      error: err?.message || 'Sınav dosyası işlenirken bir sunucu hatası oluştu.',
+      code: err?.code || (isMissingKey ? 'MISSING_GEMINI_API_KEY' : 'SERVER_ERROR')
     });
   }
 });

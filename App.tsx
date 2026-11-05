@@ -25,7 +25,7 @@ import {
   AlertCircle, FileWarning, PlusCircle, MinusCircle, Check,
   Cloud, CloudOff, RefreshCw, BarChart2, PieChart, Activity, TrendingUp,
   Settings, Database, Wifi, WifiOff, ExternalLink, Terminal, ShieldAlert,
-  Sliders, HelpCircle, PenTool
+  Sliders, HelpCircle, PenTool, Copy, Info
 } from 'lucide-react';
 
 // --- Helper Functions for Persistence ---
@@ -43,6 +43,7 @@ interface UploadResult {
   fileName: string;
   status: 'success' | 'error';
   message?: string;
+  isMissingApiKey?: boolean;
 }
 
 // --- Components defined within App to share state logic easily ---
@@ -508,34 +509,234 @@ interface UploadReportModalProps {
   onClose: () => void;
   onCreateManually: (fileName: string) => void;
 }
+const SAMPLE_EXAM_TXT = `1. Türkiye'nin başkenti neresidir?
+A) İstanbul
+B) Ankara
+C) İzmir
+D) Bursa
+Cevap: B
+
+2. Aşağıdakilerden hangisi bir asal sayıdır?
+A) 4
+B) 6
+C) 7
+D) 9
+Cevap: C
+
+Cevap Anahtarı:
+1-B, 2-C`;
+
 const UploadReportModal: React.FC<UploadReportModalProps> = ({ results, isOpen, onClose, onCreateManually }) => {
+  const [activeTab, setActiveTab] = useState<'results' | 'guide' | 'template'>('results');
+  const [copied, setCopied] = useState(false);
+
   if (!isOpen) return null;
   const hasErrors = results.some(r => r.status === 'error');
+  const hasMissingApiKey = results.some(
+    r => r.isMissingApiKey || (r.message && (r.message.includes('GEMINI_API_KEY') || r.message.includes('ortam değişkeni')))
+  );
+
+  const handleCopyTemplate = () => {
+    navigator.clipboard.writeText(SAMPLE_EXAM_TXT);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
     <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4 backdrop-blur-sm overflow-hidden">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-lg w-full animate-in fade-in zoom-in duration-200 border-t-4 border-blue-500 transition-colors flex flex-col max-h-[85dvh]">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-xl w-full animate-in fade-in zoom-in duration-200 border-t-4 border-blue-500 transition-colors flex flex-col max-h-[90dvh]">
         
-        <div className="flex items-center gap-3 p-6 pb-2 flex-shrink-0">
-          <div className={`p-2 rounded-full ${hasErrors ? 'bg-orange-100 dark:bg-orange-900/30' : 'bg-green-100 dark:bg-green-900/30'}`}>
-            {hasErrors ? <AlertCircle className="w-6 h-6 text-orange-600 dark:text-orange-400" /> : <CheckCircle className="w-6 h-6 text-green-600 dark:text-green-400" />}
+        {/* Header */}
+        <div className="p-6 pb-3 flex-shrink-0 border-b border-gray-100 dark:border-gray-700">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className={`p-2 rounded-full ${hasErrors ? 'bg-orange-100 dark:bg-orange-900/30' : 'bg-green-100 dark:bg-green-900/30'}`}>
+                {hasErrors ? <AlertCircle className="w-6 h-6 text-orange-600 dark:text-orange-400" /> : <CheckCircle className="w-6 h-6 text-green-600 dark:text-green-400" />}
+              </div>
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white">İşlem Raporu</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Yüklenen dosyaların durumu ve çözüm önerileri</p>
+              </div>
+            </div>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded-lg">
+              <X className="w-5 h-5" />
+            </button>
           </div>
-          <h3 className="text-xl font-bold text-gray-900 dark:text-white">İşlem Raporu</h3>
+
+          {/* Tab Selector if API key issue or error exists */}
+          {hasMissingApiKey && (
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() => setActiveTab('results')}
+                className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${activeTab === 'results' ? 'bg-blue-600 text-white shadow' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}
+              >
+                Sonuçlar ({results.length})
+              </button>
+              <button
+                onClick={() => setActiveTab('guide')}
+                className={`text-xs px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition ${activeTab === 'guide' ? 'bg-amber-600 text-white shadow' : 'bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300'}`}
+              >
+                <Key className="w-3.5 h-3.5" />
+                Ücretsiz Key Kurulumu (Vercel)
+              </button>
+              <button
+                onClick={() => setActiveTab('template')}
+                className={`text-xs px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition ${activeTab === 'template' ? 'bg-emerald-600 text-white shadow' : 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300'}`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                Ücretsiz Alternatif (.txt)
+              </button>
+            </div>
+          )}
         </div>
         
-        <div className="flex-1 overflow-y-auto px-6 py-2 space-y-3">
-          {results.map((result, idx) => (
-            <div key={idx} className={`p-3 rounded-xl border flex items-center justify-between ${result.status === 'error' ? 'bg-red-50 dark:bg-red-900/10 border-red-100 dark:border-red-900/30' : 'bg-green-50 dark:bg-green-900/10 border-green-100 dark:border-green-900/30'}`}>
-              <div className="flex items-center gap-3 overflow-hidden">
-                {result.status === 'error' ? <FileWarning className="w-5 h-5 text-red-500 flex-shrink-0" /> : <Check className="w-5 h-5 text-green-500 flex-shrink-0" />}
-                <div className="truncate"><p className="font-medium text-sm text-gray-800 dark:text-gray-200 truncate" title={result.fileName}>{result.fileName}</p>{result.status === 'error' && <p className="text-xs text-red-500 mt-0.5">{result.message || 'Okunamadı'}</p>}</div>
+        {/* Content Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          
+          {activeTab === 'results' && (
+            <>
+              {hasMissingApiKey && (
+                <div className="p-3.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-xs space-y-2">
+                  <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300 font-semibold">
+                    <Key className="w-4 h-4 flex-shrink-0" />
+                    <span>GEMINI_API_KEY Ortam Değişkeni Eksik</span>
+                  </div>
+                  <p className="text-amber-700 dark:text-amber-400 leading-relaxed">
+                    Vercel üzerinde PDF ve resim dosyalarını yapay zekayla okumak için ücretsiz Google Gemini API anahtarı eklenmelidir.
+                  </p>
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={() => setActiveTab('guide')}
+                      className="bg-amber-600 hover:bg-amber-700 text-white px-2.5 py-1 rounded-lg text-xs font-medium transition"
+                    >
+                      Kurulum Kılavuzunu Gör
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('template')}
+                      className="bg-white dark:bg-gray-800 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 px-2.5 py-1 rounded-lg text-xs font-medium hover:bg-amber-100/50 transition"
+                    >
+                      Anahtarsız Alternatifi İncele
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {results.map((result, idx) => (
+                  <div key={idx} className={`p-3.5 rounded-xl border flex flex-col gap-2 ${result.status === 'error' ? 'bg-red-50 dark:bg-red-900/10 border-red-100 dark:border-red-900/30' : 'bg-green-50 dark:bg-green-900/10 border-green-100 dark:border-green-900/30'}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5 overflow-hidden">
+                        {result.status === 'error' ? <FileWarning className="w-5 h-5 text-red-500 flex-shrink-0" /> : <Check className="w-5 h-5 text-green-500 flex-shrink-0" />}
+                        <p className="font-semibold text-sm text-gray-800 dark:text-gray-200 truncate" title={result.fileName}>{result.fileName}</p>
+                      </div>
+                      {result.status === 'error' && (
+                        <button onClick={() => onCreateManually(result.fileName)} className="flex-shrink-0 text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-2 py-1.5 rounded-lg hover:bg-blue-200 dark:hover:bg-blue-900/50 transition font-medium">Elle Oluştur</button>
+                      )}
+                    </div>
+                    {result.status === 'error' && (
+                      <p className="text-xs text-red-600 dark:text-red-400 pl-7 leading-relaxed">{result.message || 'Okunamadı'}</p>
+                    )}
+                  </div>
+                ))}
               </div>
-              {result.status === 'error' && <button onClick={() => onCreateManually(result.fileName)} className="flex-shrink-0 text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-2 py-1.5 rounded-lg hover:bg-blue-200 dark:hover:bg-blue-900/50 transition font-medium">Elle Oluştur</button>}
+            </>
+          )}
+
+          {activeTab === 'guide' && (
+            <div className="space-y-4 text-xs text-gray-700 dark:text-gray-300">
+              <div className="bg-blue-50 dark:bg-blue-900/20 p-3.5 rounded-xl border border-blue-100 dark:border-blue-800 space-y-1">
+                <p className="font-bold text-blue-900 dark:text-blue-300">💡 Google Gemini API Tamamen Ücretsizdir!</p>
+                <p className="text-blue-800 dark:text-blue-400">
+                  Kredi kartı gerekmez. Google AI Studio, dakikada 15 istek ve günlük cömert limitlerle tamamen ücretsiz kullanım imkanı sunar.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl space-y-1.5">
+                  <span className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs">1</span>
+                    Google AI Studio'dan Ücretsiz Key Alın
+                  </span>
+                  <p className="pl-7 text-gray-600 dark:text-gray-400">
+                    Tarayıcınızda <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-400 underline font-medium inline-flex items-center gap-1">aistudio.google.com/apikey <ExternalLink className="w-3 h-3" /></a> adresini açın. Google hesabınızla giriş yapıp <strong>"Create API Key"</strong> butonuna basarak anahtarınızı kopyalayın.
+                  </p>
+                </div>
+
+                <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl space-y-1.5">
+                  <span className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs">2</span>
+                    Vercel Dashboard'a Ekleyin
+                  </span>
+                  <div className="pl-7 space-y-1 text-gray-600 dark:text-gray-400">
+                    <p>• <a href="https://vercel.com/dashboard" target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-400 underline inline-flex items-center gap-1">vercel.com/dashboard <ExternalLink className="w-3 h-3" /></a> sayfasında projenizi açın.</p>
+                    <p>• <strong>Settings</strong> &gt; <strong>Environment Variables</strong> sekmesine gidin.</p>
+                    <p>• Key kısmına: <code className="bg-gray-200 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono font-bold text-blue-600 dark:text-blue-400">GEMINI_API_KEY</code> yazın.</p>
+                    <p>• Value kısmına: Kopyaladığınız anahtarı yapıştırıp <strong>Save</strong> butonuna basın.</p>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl space-y-1.5">
+                  <span className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs">3</span>
+                    Yeniden Dağıtın (Redeploy)
+                  </span>
+                  <p className="pl-7 text-gray-600 dark:text-gray-400">
+                    Vercel'de <strong>Deployments</strong> sekmesine gidin, en üstteki aktif dağıtımın yanındaki <code className="bg-gray-200 dark:bg-gray-800 px-1 py-0.5 rounded">...</code> (üç nokta) menüsünden <strong>Redeploy</strong> seçeneğine tıklayın. 30 saniye içinde tüm PDF ve görselleriniz sorunsuz okunacaktır!
+                  </p>
+                </div>
+              </div>
             </div>
-          ))}
+          )}
+
+          {activeTab === 'template' && (
+            <div className="space-y-3 text-xs text-gray-700 dark:text-gray-300">
+              <div className="bg-emerald-50 dark:bg-emerald-900/20 p-3.5 rounded-xl border border-emerald-100 dark:border-emerald-800 space-y-1">
+                <p className="font-bold text-emerald-900 dark:text-emerald-300">✨ API Anahtarı Olmadan %100 Ücretsiz Kullanım</p>
+                <p className="text-emerald-800 dark:text-emerald-400">
+                  Uygulamamız metin tabanlı sınavları (.txt, .json, .md) doğrudan tarayıcınızda yerel algoritmayla okur. Hiçbir API anahtarına veya sunucuya ihtiyaç yoktur!
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-gray-800 dark:text-gray-200">Desteklenen Örnek Metin (.txt) Formatı:</span>
+                  <button
+                    onClick={handleCopyTemplate}
+                    className="flex items-center gap-1 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 px-2.5 py-1 rounded-lg text-xs font-medium transition"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copied ? 'Kopyalandı!' : 'Şablonu Kopyala'}
+                  </button>
+                </div>
+                <pre className="p-3 bg-gray-900 text-gray-100 rounded-xl font-mono text-[11px] overflow-x-auto leading-relaxed border border-gray-800 select-text">
+{SAMPLE_EXAM_TXT}
+                </pre>
+                <p className="text-gray-500 dark:text-gray-400 text-[11px]">
+                  💡 Bu formatta bir metin belgesi (Not Defteri) oluşturup ".txt" olarak kaydedip Dosyalarım &gt; Yükle kısmından yüklerseniz sınavınız anında hazır olacaktır.
+                </p>
+              </div>
+            </div>
+          )}
+
         </div>
 
-        <div className="p-6 pt-4 border-t border-gray-100 dark:border-gray-700 flex-shrink-0 bg-white dark:bg-gray-800 rounded-b-2xl">
-            <button onClick={onClose} className="w-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 font-semibold py-3 px-4 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition">Kapat</button>
+        {/* Footer */}
+        <div className="p-4 border-t border-gray-100 dark:border-gray-700 flex-shrink-0 bg-white dark:bg-gray-800 rounded-b-2xl flex gap-2">
+          {activeTab !== 'results' ? (
+            <button
+              onClick={() => setActiveTab('results')}
+              className="flex-1 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 font-semibold py-2.5 px-4 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition text-sm"
+            >
+              Geri Dön
+            </button>
+          ) : (
+            <button
+              onClick={onClose}
+              className="flex-1 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 font-semibold py-2.5 px-4 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition text-sm"
+            >
+              Kapat
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -1301,7 +1502,8 @@ const App: React.FC = () => {
           results.push({
             fileName: file.name,
             status: 'error',
-            message: parsedData.errorMessage || "Belgeden soru tespit edilemedi veya dosya formatı desteklenmiyor."
+            message: parsedData.errorMessage || "Belgeden soru tespit edilemedi veya dosya formatı desteklenmiyor.",
+            isMissingApiKey: parsedData.isMissingApiKey || (parsedData.errorMessage ? parsedData.errorMessage.includes('GEMINI_API_KEY') : false)
           });
         } else {
           const newExam: Exam = {

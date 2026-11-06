@@ -1,5 +1,5 @@
 import { Question } from '../types';
-import { cleanAndDescramblePdfText } from './textDescrambler';
+import { cleanAndDescramblePdfText, autoRepairText } from './textDescrambler';
 
 export interface LocalParseResult {
   title: string;
@@ -103,9 +103,8 @@ export function parseTextExamLocally(rawContent: string, fileName?: string): Loc
     const questionNumber = parseInt(headerMatch[1], 10);
     const fullContent = headerMatch[2].trim();
 
-    // Find options inside this block
     // Supports both multiline (A) ... \n B) ...) and inline (A) ... B) ... C) ...)
-    const optionRegex = /(?:^|\n|\s{2,})\(?([A-Ea-e])\)?[.\-:]\s+/g;
+    const optionRegex = /(?:^|\n|\s{2,})\s*\(?([A-Ea-e])[\)\.\-:]\s+/g;
     const optIndices: { label: string; start: number; end: number }[] = [];
 
     let match: RegExpExecArray | null;
@@ -136,7 +135,7 @@ export function parseTextExamLocally(rawContent: string, fileName?: string): Loc
 
         options.push({
           label: cur.label,
-          text: optText
+          text: autoRepairText(optText)
         });
       }
     }
@@ -156,7 +155,7 @@ export function parseTextExamLocally(rawContent: string, fileName?: string): Loc
     if (questionText || options.length > 0) {
       questions.push({
         id: questionNumber || questions.length + 1,
-        text: questionText || `Soru ${questionNumber}`,
+        text: autoRepairText(questionText || `Soru ${questionNumber}`),
         options,
         correctAnswerLabel,
         userSelection: null

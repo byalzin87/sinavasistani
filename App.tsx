@@ -4,6 +4,7 @@ import { fileToBase64, fileToText, getMimeType } from './services/fileUtils';
 import { parseExamFile } from './services/geminiService';
 import { extractTextFromPdf } from './services/pdfParser';
 import { parseTextExamLocally } from './services/localExamParser';
+import { autoRepairText } from './services/textDescrambler';
 import { 
   initSupabase, 
   cloudLogin, 
@@ -39,6 +40,25 @@ const getSettingsKey = (username: string) => `sinav_asistani_settings_${normaliz
 
 const USER_REGISTRY_KEY = 'sinav_asistani_users_registry';
 const SUPABASE_CONFIG_KEY = 'sinav_asistani_supabase_config';
+
+const repairExamData = (exam: Exam): Exam => ({
+  ...exam,
+  title: autoRepairText(exam.title),
+  questions: (exam.questions || []).map(q => ({
+    ...q,
+    text: autoRepairText(q.text),
+    options: (q.options || []).map(opt => ({
+      ...opt,
+      text: autoRepairText(opt.text)
+    }))
+  }))
+});
+
+const repairFoldersData = (folders: Folder[]): Folder[] =>
+  (folders || []).map(f => ({
+    ...f,
+    exams: (f.exams || []).map(repairExamData)
+  }));
 
 // --- Types for Upload Handling ---
 interface UploadResult {
@@ -1103,7 +1123,7 @@ const ExamTaker: React.FC<ExamTakerProps> = ({ exam, onUpdateExam, onBack, onRes
         {exam.questions.length === 0 && (<div className="text-center py-10 opacity-60"><p className="text-xl text-gray-500 dark:text-gray-400">Bu sınavda henüz soru yok.</p>{isEditMode && <p className="text-sm mt-2 text-blue-500">Aşağıdaki butonu kullanarak soru ekleyin.</p>}</div>)}
         {exam.questions.map((q, index) => (
           <div key={q.id} className={`mb-8 border-b border-gray-100 dark:border-gray-800 pb-6 last:border-0 group/question ${isKeyCorrectionMode ? 'ring-2 ring-purple-100 dark:ring-purple-900/20 p-4 rounded-xl' : ''}`}>
-            <div className="flex gap-3 mb-4"><span className="font-bold text-gray-900 dark:text-gray-100 text-lg pt-1">{index + 1}.</span><div className="flex-1">{isEditMode ? (<textarea value={q.text} onChange={(e) => handleQuestionTextChange(q.id, e.target.value)} className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:outline-none min-h-[80px]" placeholder="Soru metni..." />) : (<p className="text-gray-800 dark:text-gray-200 text-lg leading-relaxed whitespace-pre-wrap">{q.text}</p>)}</div>{isEditMode && (<button onClick={() => requestDeleteQuestion(q.id)} className="self-start p-2 text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"><Trash2 className="w-5 h-5" /></button>)}</div>
+            <div className="flex gap-3 mb-4"><span className="font-bold text-gray-900 dark:text-gray-100 text-lg pt-1">{index + 1}.</span><div className="flex-1">{isEditMode ? (<textarea value={autoRepairText(q.text)} onChange={(e) => handleQuestionTextChange(q.id, e.target.value)} className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:outline-none min-h-[80px]" placeholder="Soru metni..." />) : (<p className="text-gray-800 dark:text-gray-200 text-lg leading-relaxed whitespace-pre-wrap">{autoRepairText(q.text)}</p>)}</div>{isEditMode && (<button onClick={() => requestDeleteQuestion(q.id)} className="self-start p-2 text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"><Trash2 className="w-5 h-5" /></button>)}</div>
             <div className="space-y-3 pl-2 sm:pl-8">
               {q.options.map((opt) => {
                 const isSelected = q.userSelection === opt.label; const isCorrect = q.correctAnswerLabel === opt.label;
@@ -1124,7 +1144,7 @@ const ExamTaker: React.FC<ExamTakerProps> = ({ exam, onUpdateExam, onBack, onRes
                     if (isCorrect) { containerClass += "border-green-500 bg-green-100/40 dark:bg-green-900/40 shadow-sm"; textClass += "text-green-800 dark:text-green-400 font-bold"; labelClass += "text-green-800 dark:text-green-400 font-bold"; } else if (isSelected) { containerClass += "border-red-500 bg-red-50 dark:bg-red-900/20 shadow-sm"; textClass += "text-red-700 dark:text-red-400 font-bold"; labelClass += "text-red-700 dark:text-red-400 font-bold"; } else { containerClass += "border-gray-200 dark:border-gray-700 opacity-60"; textClass += "text-gray-900 dark:text-gray-400"; labelClass += "text-gray-900 dark:text-gray-400 font-medium"; } 
                 }
 
-                return (<div key={opt.label} className="relative"><button onClick={() => handleOptionSelect(q.id, opt.label)} disabled={(exam.isFinished && !isKeyCorrectionMode) || isEditMode} className={containerClass}><span className={labelClass} title={isEditMode || isKeyCorrectionMode ? "Doğru cevap olarak işaretle" : ""} onClick={(e) => { if(isEditMode) { e.stopPropagation(); toggleCorrectAnswer(q.id, opt.label); } }}>{opt.label})</span>{isEditMode ? (<input type="text" value={opt.text} onChange={(e) => handleOptionTextChange(q.id, opt.label, e.target.value)} className="flex-1 bg-transparent border-b border-transparent focus:border-blue-500 focus:outline-none w-full" placeholder="Şık metni..." onClick={e => e.stopPropagation()} />) : (<span className={textClass}>{opt.text}</span>)}{!isEditMode && !isKeyCorrectionMode && isSelected && !exam.isFinished && (<CheckCircle className="absolute right-3 top-3 w-5 h-5 text-green-500" />)}{!isEditMode && !isKeyCorrectionMode && exam.isFinished && isCorrect && (<CheckCircle className="absolute right-3 top-3 w-5 h-5 text-green-600 dark:text-green-400" />)}{!isEditMode && !isKeyCorrectionMode && exam.isFinished && isSelected && !isCorrect && (<XCircle className="absolute right-3 top-3 w-5 h-5 text-red-500 dark:text-red-400" />)}</button>{isEditMode && (<button onClick={() => removeOption(q.id, opt.label)} className="absolute right-[-30px] top-4 text-red-300 hover:text-red-500"><MinusCircle className="w-5 h-5" /></button>)}</div>);
+                return (<div key={opt.label} className="relative"><button onClick={() => handleOptionSelect(q.id, opt.label)} disabled={(exam.isFinished && !isKeyCorrectionMode) || isEditMode} className={containerClass}><span className={labelClass} title={isEditMode || isKeyCorrectionMode ? "Doğru cevap olarak işaretle" : ""} onClick={(e) => { if(isEditMode) { e.stopPropagation(); toggleCorrectAnswer(q.id, opt.label); } }}>{opt.label})</span>{isEditMode ? (<input type="text" value={autoRepairText(opt.text)} onChange={(e) => handleOptionTextChange(q.id, opt.label, e.target.value)} className="flex-1 bg-transparent border-b border-transparent focus:border-blue-500 focus:outline-none w-full" placeholder="Şık metni..." onClick={e => e.stopPropagation()} />) : (<span className={textClass}>{autoRepairText(opt.text)}</span>)}{!isEditMode && !isKeyCorrectionMode && isSelected && !exam.isFinished && (<CheckCircle className="absolute right-3 top-3 w-5 h-5 text-green-500" />)}{!isEditMode && !isKeyCorrectionMode && exam.isFinished && isCorrect && (<CheckCircle className="absolute right-3 top-3 w-5 h-5 text-green-600 dark:text-green-400" />)}{!isEditMode && !isKeyCorrectionMode && exam.isFinished && isSelected && !isCorrect && (<XCircle className="absolute right-3 top-3 w-5 h-5 text-red-500 dark:text-red-400" />)}</button>{isEditMode && (<button onClick={() => removeOption(q.id, opt.label)} className="absolute right-[-30px] top-4 text-red-300 hover:text-red-500"><MinusCircle className="w-5 h-5" /></button>)}</div>);
               })}
               {isEditMode && (<button onClick={() => addOption(q.id)} className="text-sm text-blue-500 hover:text-blue-700 flex items-center gap-1 mt-2"><PlusCircle className="w-4 h-4" /> Şık Ekle</button>)}
             </div>
@@ -1263,6 +1283,7 @@ const App: React.FC = () => {
           }
         }
         
+        loadedFolders = repairFoldersData(loadedFolders);
         setFolders(loadedFolders);
         foldersRef.current = loadedFolders;
         setIsInitialized(true);
@@ -1530,13 +1551,14 @@ const App: React.FC = () => {
             isMissingApiKey: parsedData.isMissingApiKey || (parsedData.errorMessage ? parsedData.errorMessage.includes('GEMINI_API_KEY') : false)
           });
         } else {
-          const newExam: Exam = {
+          const rawExam: Exam = {
             id: crypto.randomUUID(),
             title: parsedData.title,
             dateCreated: new Date().toISOString(),
             questions: parsedData.questions,
             isFinished: false
           };
+          const newExam: Exam = repairExamData(rawExam);
           processedExams.push({ folderId: folderId!, exam: newExam });
           results.push({ fileName: file.name, status: 'success' });
         }

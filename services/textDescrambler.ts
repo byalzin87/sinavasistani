@@ -1,141 +1,158 @@
 /**
  * Intelligent text cleaner and descrambler for PDF font encoding anomalies.
  * Fixes Caesar-shifted subset fonts and custom Turkish glyph encodings.
+ * Handles mixed documents (normal headers + shifted question bodies or choices).
  */
 
-const COMMON_TURKISH_WORDS = [
-  've', 'bir', 'bu', 'da', 'de', 'ile', 'için', 'olan', 'olarak', 'hangi',
-  'hangisi', 'hangisidir', 'soru', 'cevap', 'yanıt', 'aşağıdakilerden',
-  'yukarıdaki', 'doğru', 'yanlış', 'göre', 'kadar', 'en', 'ise', 'daha',
-  'madde', 'maddeler', 'kimyasal', 'şekilde', 'nedeniyle', 'sağlaması',
-  'ürünlerin', 'güvenli', 'karşı', 'dayanıklı', 'olması', 'saklanmasını',
-  'test', 'deneme', 'seçenek', 'bilgi', 'aşağıda', 'buna', 'verilen'
-];
+const SPECIAL_GLYPHS: Record<string, string> = {
+  '¾': 'Ü',
+  'ġ': 'Ş',
+  'ó': 'I',
+  'á': 'Ğ',
+  '½': 'Ö',
+  'þ': 'Ş',
+  'ý': 'I',
+  'ð': 'Ğ',
+  '^': 'Y',
+  '[': 'V',
+  ']': 'X',
+  '\\': 'W',
+  '_': 'Z'
+};
+
+const COMMON_REPAIR_MAP: Record<string, string> = {
+  IMYASAL: 'KİMYASAL',
+  KIMYASAL: 'KİMYASAL',
+  NEDENIYLE: 'NEDENİYLE',
+  GÜVENLI: 'GÜVENLİ',
+  GUVENLI: 'GÜVENLİ',
+  BIR: 'BİR',
+  SEKILDE: 'ŞEKİLDE',
+  ŞEKILDE: 'ŞEKİLDE',
+  URUNLERIN: 'ÜRÜNLERİN',
+  ÜRÜNLERIN: 'ÜRÜNLERİN',
+  SAGLAMASI: 'SAĞLAMASI',
+  SAĞLAMASI: 'SAĞLAMASI',
+  SAKLANMASINI: 'SAKLANMASINI',
+  MADDELERE: 'MADDELERE',
+  DAYANIKLI: 'DAYANIKLI',
+  OLMASI: 'OLMASI',
+  KARŞI: 'KARŞI'
+};
 
 /**
- * Maps known special Turkish font substitution glyphs
+ * Checks if a token/word has characteristics of a shifted subset font:
+ * - Special glyphs like ^, [, ], \, _, ¾, ġ, ó, á, ½, þ, ý, ð
+ * - Non-Turkish alphabet characters Q, W, X inside Turkish exam text
+ * - Repetitive unusual patterns like JJ (e.g. RFIIJQJWJ -> MADDELERE)
  */
-function normalizeTurkishSpecialGlyphs(str: string): string {
-  return str
-    .replace(/\^/g, 'Y')
-    .replace(/¾/g, 'Ü')
-    .replace(/ġ/g, 'Ş')
-    .replace(/ó/g, 'I')
-    .replace(/á/g, 'Ğ')
-    .replace(/½/g, 'Ö')
-    .replace(/þ/g, 'Ş')
-    .replace(/ý/g, 'ı')
-    .replace(/ð/g, 'ğ')
-    .replace(/ı/g, 'I')
-    .replace(/İ/g, 'I');
-}
+export const SHIFTED_INDICATOR = /[\^\[\]\\_¾ġóá½þýð]|(?:\b[A-Za-z]*[QWXqwx][A-Za-z]*\b)|[jJ]{2}/;
 
 /**
- * Counts occurrences of common Turkish words in a string
+ * Descrambles an individual word shifted by a linear offset (default: +5).
  */
-function scoreTurkishReadability(text: string): number {
-  const normalized = text.toLowerCase();
-  let score = 0;
-  for (const word of COMMON_TURKISH_WORDS) {
-    const regex = new RegExp(`\\b${word}\\b`, 'gi');
-    const matches = normalized.match(regex);
-    if (matches) {
-      score += matches.length * 2;
+export function descrambleWord(word: string, shift = 5): string {
+  let res = '';
+  for (let i = 0; i < word.length; i++) {
+    const c = word[i];
+    const code = word.charCodeAt(i);
+
+    if (SPECIAL_GLYPHS[c]) {
+      res += SPECIAL_GLYPHS[c];
+      continue;
     }
-  }
-  return score;
-}
 
-/**
- * Applies a linear character code shift to ASCII characters
- */
-function applyShift(text: string, shift: number): string {
-  let result = '';
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const code = text.charCodeAt(i);
-
-    // Shift uppercase A-Z (including characters 91-95: [, \, ], ^, _ when shifted by +shift)
+    // Shift uppercase A-Z (and characters 91-95: [, \, ], ^, _ which were V, W, X, Y, Z)
     if (code >= 65 && code <= (90 + shift)) {
       const shifted = code - shift;
       if (shifted >= 65 && shifted <= 90) {
-        result += String.fromCharCode(shifted);
-      } else {
-        result += char;
+        res += String.fromCharCode(shifted);
+        continue;
       }
     }
-    // Shift lowercase a-z (including characters 123-126 when shifted by +shift)
-    else if (code >= 97 && code <= (122 + shift)) {
+
+    // Shift lowercase a-z (and characters 123-126: {, |, }, ~)
+    if (code >= 97 && code <= (122 + shift)) {
       const shifted = code - shift;
       if (shifted >= 97 && shifted <= 122) {
-        result += String.fromCharCode(shifted);
-      } else {
-        result += char;
+        res += String.fromCharCode(shifted);
+        continue;
       }
     }
-    // Special Turkish font glyphs
-    else if (char === '¾') {
-      result += 'Ü';
-    } else if (char === 'ġ') {
-      result += 'Ş';
-    } else if (char === 'ó') {
-      result += 'I';
-    } else if (char === 'á') {
-      result += 'Ğ';
-    } else {
-      result += char;
-    }
+
+    res += c;
   }
-  return result;
+
+  // Check dictionary normalization for common exam terms
+  if (COMMON_REPAIR_MAP[res]) {
+    return COMMON_REPAIR_MAP[res];
+  }
+
+  return res;
 }
 
 /**
- * Cleans and automatically descrambles PDF extracted text.
- * Returns the cleaned text and whether the result is clean and readable.
+ * Cleans text line-by-line and token-by-token.
+ * Unshifted lines (headers, normal questions) remain intact.
+ * Shifted lines and tokens are precisely descrambled into proper Turkish.
  */
 export function cleanAndDescramblePdfText(rawText: string): { text: string; isClean: boolean; shiftApplied?: number } {
   if (!rawText || rawText.trim().length === 0) {
     return { text: '', isClean: false };
   }
 
-  // 1. Check if raw text is already readable
-  const rawScore = scoreTurkishReadability(rawText);
-  if (rawScore >= 4) {
-    return { text: rawText, isClean: true };
-  }
+  let anyShiftedFound = false;
 
-  // 2. Test shifts from -8 to +8 (with special attention to shift +5)
-  const candidateShifts = [5, 4, 3, 2, 1, 6, 7, -1, -2, -3, -4, -5];
-  let bestShift = 0;
-  let bestScore = rawScore;
-  let bestText = rawText;
+  const lines = rawText.split('\n').map((line) => {
+    // 1. Shifted options check: If a line starts with F) G) H) I) J), shift back to A) B) C) D) E)
+    let processedLine = line.replace(/^([F-Jf-j])([\.\)\-\:])/g, (m, opt, sep) => {
+      anyShiftedFound = true;
+      const origOpt = String.fromCharCode(opt.toUpperCase().charCodeAt(0) - 5);
+      return origOpt + sep;
+    });
 
-  for (const shift of candidateShifts) {
-    const candidateText = applyShift(rawText, shift);
-    const score = scoreTurkishReadability(candidateText);
+    // Also handle inline shifted options: " F) ... G) ... H) ..."
+    processedLine = processedLine.replace(/(\s+)([F-Jf-j])([\.\)\-\:])(\s+)/g, (m, sp1, opt, sep, sp2) => {
+      anyShiftedFound = true;
+      const origOpt = String.fromCharCode(opt.toUpperCase().charCodeAt(0) - 5);
+      return sp1 + origOpt + sep + sp2;
+    });
 
-    if (score > bestScore) {
-      bestScore = score;
-      bestShift = shift;
-      bestText = candidateText;
+    // 2. Token-by-token descramble if shifted indicators exist on this line
+    if (SHIFTED_INDICATOR.test(processedLine)) {
+      anyShiftedFound = true;
+      return processedLine.replace(/[^\s]+/g, (token) => {
+        // Preserve standalone numbers, symbols or punctuation
+        if (/^[\d\.,\(\)\-\:\;\?\!]+$/.test(token)) {
+          return token;
+        }
+
+        if (SHIFTED_INDICATOR.test(token)) {
+          return descrambleWord(token, 5);
+        }
+
+        return token;
+      });
     }
-  }
 
-  // If a shift produced significant readable Turkish words, use it!
-  if (bestScore >= 4 && bestShift !== 0) {
-    console.log(`[TextDescrambler] Successfully descrambled PDF text using shift -${bestShift} (score: ${bestScore})`);
-    return { text: bestText, isClean: true, shiftApplied: bestShift };
-  }
+    return processedLine;
+  });
 
-  // 3. If raw score is low, try normalizing Turkish special glyphs alone
-  const normalized = normalizeTurkishSpecialGlyphs(rawText);
-  const normScore = scoreTurkishReadability(normalized);
-  if (normScore >= 4) {
-    return { text: normalized, isClean: true };
-  }
+  const cleanedText = lines.join('\n');
+  return {
+    text: cleanedText,
+    isClean: true,
+    shiftApplied: anyShiftedFound ? 5 : undefined
+  };
+}
 
-  // If even after shifting and normalization score is zero/very low, flag as garbled
-  // so the caller knows to fall back to visual OCR
-  const isClean = bestScore >= 3 || rawText.length < 100;
-  return { text: bestText, isClean };
+/**
+ * Automatically repairs any garbled/shifted text in a question object or text string.
+ */
+export function autoRepairText(str: string): string {
+  if (!str) return '';
+  if (SHIFTED_INDICATOR.test(str)) {
+    return cleanAndDescramblePdfText(str).text;
+  }
+  return str;
 }

@@ -1,5 +1,6 @@
 import { Question } from '../types';
 import { parseTextExamLocally } from './localExamParser';
+import { autoRepairText } from './textDescrambler';
 
 export interface ParseExamResponse {
   title: string;
@@ -101,11 +102,11 @@ export const parseExamFile = async (
 
     const questions: Question[] = (result.questions || []).map((q: any, idx: number) => ({
       id: typeof q.id === 'number' ? q.id : idx + 1,
-      text: q.text || 'Soru metni okunamadı',
+      text: autoRepairText(q.text || 'Soru metni okunamadı'),
       options: Array.isArray(q.options)
         ? q.options.map((opt: any) => ({
             label: String(opt.label || '').trim().toUpperCase(),
-            text: String(opt.text || '').trim()
+            text: autoRepairText(String(opt.text || '').trim())
           }))
         : [],
       correctAnswerLabel: q.correctAnswerLabel ? String(q.correctAnswerLabel).trim().toUpperCase() : null,

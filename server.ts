@@ -48,12 +48,74 @@ function getApiKey(): string {
   ).trim();
 }
 
+const SPECIAL_GLYPHS: Record<string, string> = {
+  '¾': 'Ü', 'ġ': 'Ş', 'ó': 'I', 'á': 'Ğ', '½': 'Ö', 'þ': 'Ş', 'ý': 'I', 'ð': 'Ğ',
+  '^': 'Y', '[': 'V', ']': 'X', '\\': 'W', '_': 'Z'
+};
+
+const COMMON_REPAIR_MAP: Record<string, string> = {
+  IMYASAL: 'KİMYASAL', KIMYASAL: 'KİMYASAL', NEDENIYLE: 'NEDENİYLE',
+  GÜVENLI: 'GÜVENLİ', GUVENLI: 'GÜVENLİ', BIR: 'BİR', SEKILDE: 'ŞEKİLDE',
+  ŞEKILDE: 'ŞEKİLDE', URUNLERIN: 'ÜRÜNLERİN', ÜRÜNLERIN: 'ÜRÜNLERİN',
+  SAGLAMASI: 'SAĞLAMASI', SAĞLAMASI: 'SAĞLAMASI', SAKLANMASINI: 'SAKLANMASINI',
+  MADDELERE: 'MADDELERE', DAYANIKLI: 'DAYANIKLI', OLMASI: 'OLMASI', KARŞI: 'KARŞI'
+};
+
+const SHIFTED_INDICATOR = /[\^\[\]\\_¾ġóá½þýð]|(?:\b[A-Za-z]*[QWXqwx][A-Za-z]*\b)|[jJ]{2}/;
+
+function descrambleWord(word: string, shift = 5): string {
+  let res = '';
+  for (let i = 0; i < word.length; i++) {
+    const c = word[i];
+    const code = word.charCodeAt(i);
+    if (SPECIAL_GLYPHS[c]) { res += SPECIAL_GLYPHS[c]; continue; }
+    if (code >= 65 && code <= (90 + shift)) {
+      const shifted = code - shift;
+      if (shifted >= 65 && shifted <= 90) { res += String.fromCharCode(shifted); continue; }
+    }
+    if (code >= 97 && code <= (122 + shift)) {
+      const shifted = code - shift;
+      if (shifted >= 97 && shifted <= 122) { res += String.fromCharCode(shifted); continue; }
+    }
+    res += c;
+  }
+  return COMMON_REPAIR_MAP[res] || res;
+}
+
+function cleanAndDescramblePdfText(rawText: string): string {
+  if (!rawText) return '';
+  return rawText.split('\n').map((line) => {
+    let processed = line.replace(/^([F-Jf-j])([\.\)\-\:])/g, (m, opt, sep) => {
+      return String.fromCharCode(opt.toUpperCase().charCodeAt(0) - 5) + sep;
+    });
+    processed = processed.replace(/(\s+)([F-Jf-j])([\.\)\-\:])(\s+)/g, (m, sp1, opt, sep, sp2) => {
+      return sp1 + String.fromCharCode(opt.toUpperCase().charCodeAt(0) - 5) + sep + sp2;
+    });
+    if (SHIFTED_INDICATOR.test(processed)) {
+      return processed.replace(/[^\s]+/g, (token) => {
+        if (/^[\d\.,\(\)\-\:\;\?\!]+$/.test(token)) return token;
+        if (SHIFTED_INDICATOR.test(token)) return descrambleWord(token, 5);
+        return token;
+      });
+    }
+    return processed;
+  }).join('\n');
+}
+
+function autoRepairText(str: string): string {
+  if (!str) return '';
+  if (SHIFTED_INDICATOR.test(str)) {
+    return cleanAndDescramblePdfText(str);
+  }
+  return str;
+}
+
 /**
  * Free rule-based text/JSON parser used as offline / free alternative
  * when no Gemini API key is configured.
  */
 function parseTextExamLocally(rawContent: string, fileName?: string) {
-  const content = rawContent.trim();
+  const content = cleanAndDescramblePdfText(rawContent).trim();
   const defaultTitle = fileName ? fileName.replace(/\.[^/.]+$/, '') : 'Yeni Sınav';
 
   // 1. JSON check
@@ -174,8 +236,12 @@ function parseTextExamLocally(rawContent: string, fileName?: string) {
 }
 
 async function parseExamWithGemini(input: { data: string; mimeType: string; fileName?: string }) {
-  const { data, mimeType, fileName } = input;
+  let { data, mimeType, fileName } = input;
   const isText = mimeType.startsWith('text/') || mimeType === 'application/json';
+
+  if (isText && data) {
+    data = cleanAndDescramblePdfText(data);
+  }
 
   const apiKey = getApiKey();
   if (!apiKey) {
@@ -365,11 +431,11 @@ async function parseExamWithGemini(input: { data: string; mimeType: string; file
   const title = parsedData.title || fileName || 'Yeni Sınav';
   const questions = (parsedData.questions || []).map((q: any, idx: number) => ({
     id: typeof q.id === 'number' ? q.id : idx + 1,
-    text: q.text || 'Soru metni okunamadı',
+    text: autoRepairText(q.text || 'Soru metni okunamadı'),
     options: Array.isArray(q.options)
       ? q.options.map((opt: any) => ({
           label: String(opt.label || '').trim().toUpperCase(),
-          text: String(opt.text || '').trim()
+          text: autoRepairText(String(opt.text || '').trim())
         }))
       : [],
     correctAnswerLabel: q.correctAnswerLabel ? String(q.correctAnswerLabel).trim().toUpperCase() : null,

@@ -47,10 +47,13 @@ const repairExamData = (exam: Exam): Exam => ({
   questions: (exam.questions || []).map(q => ({
     ...q,
     text: autoRepairText(q.text),
-    options: (q.options || []).map(opt => ({
-      ...opt,
-      text: autoRepairText(opt.text)
-    }))
+    options: (q.options || [])
+      .map(opt => ({
+        ...opt,
+        label: (opt.label || '').toUpperCase(),
+        text: autoRepairText(opt.text)
+      }))
+      .sort((a, b) => (a.label || '').localeCompare(b.label || ''))
   }))
 });
 

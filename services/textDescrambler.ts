@@ -6,19 +6,41 @@
 
 const SPECIAL_GLYPHS: Record<string, string> = {
   '¾': 'Ü',
+  '½': 'Ö',
   'ġ': 'Ş',
   'ó': 'I',
   'á': 'Ğ',
-  '½': 'Ö',
-  'þ': 'Ş',
-  'ý': 'I',
-  'ð': 'Ğ',
+  'Ð': 'Ğ',
+  'ð': 'ğ',
+  'Ý': 'İ',
+  'ý': 'ı',
+  'Þ': 'Ş',
+  'þ': 'ş',
+  'ã': 'ğ',
+  'Ã': 'Ğ',
+  'º': 'ş',
+  'õ': 'ı',
+  'Õ': 'İ',
   '^': 'Y',
   '[': 'V',
   ']': 'X',
   '\\': 'W',
   '_': 'Z'
 };
+
+export function normalizeTextEncoding(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/\u00A0/g, ' ')
+    .replace(/[\u00AD\u200B\u200C\u200D\uFEFF]/g, '')
+    .replace(/\uFB00/g, 'ff')
+    .replace(/\uFB01/g, 'fi')
+    .replace(/\uFB02/g, 'fl')
+    .replace(/\uFB03/g, 'ffi')
+    .replace(/\uFB04/g, 'ffl')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"');
+}
 
 const COMMON_REPAIR_MAP: Record<string, string> = {
   IMYASAL: 'KİMYASAL',
@@ -37,7 +59,20 @@ const COMMON_REPAIR_MAP: Record<string, string> = {
   MADDELERE: 'MADDELERE',
   DAYANIKLI: 'DAYANIKLI',
   OLMASI: 'OLMASI',
-  KARŞI: 'KARŞI'
+  KARŞI: 'KARŞI',
+  HANGISIDIR: 'HANGİSİDİR',
+  HANGISİDIR: 'HANGİSİDİR',
+  HANGISI: 'HANGİSİ',
+  ASAGIDAKILERDEN: 'AŞAĞIDAKİLERDEN',
+  AŞAGIDAKİLERDEN: 'AŞAĞIDAKİLERDEN',
+  YUKARIDAKILERDEN: 'YUKARIDAKİLERDEN',
+  YUKARIDAKİLERDEN: 'YUKARIDAKİLERDEN',
+  DOGRU: 'DOĞRU',
+  YANLIS: 'YANLIŞ',
+  YANLIŞTIR: 'YANLIŞTIR',
+  DOGRUDUR: 'DOĞRUDUR',
+  CEVAP: 'CEVAP',
+  YANIT: 'YANIT'
 };
 
 /**
@@ -111,7 +146,8 @@ export function cleanAndDescramblePdfText(rawText: string): { text: string; isCl
     return { text: '', isClean: false };
   }
 
-  const rawLines = rawText.split('\n');
+  const normalized = normalizeTextEncoding(rawText);
+  const rawLines = normalized.split('\n');
 
   // Count shifted indicators across the whole document
   let totalShiftedLines = 0;

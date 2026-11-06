@@ -104,10 +104,12 @@ export const parseExamFile = async (
       id: typeof q.id === 'number' ? q.id : idx + 1,
       text: autoRepairText(q.text || 'Soru metni okunamadı'),
       options: Array.isArray(q.options)
-        ? q.options.map((opt: any) => ({
-            label: String(opt.label || '').trim().toUpperCase(),
-            text: autoRepairText(String(opt.text || '').trim())
-          }))
+        ? q.options
+            .map((opt: any) => ({
+              label: String(opt.label || '').trim().toUpperCase(),
+              text: autoRepairText(String(opt.text || '').trim())
+            }))
+            .sort((a: any, b: any) => (a.label || '').localeCompare(b.label || ''))
         : [],
       correctAnswerLabel: q.correctAnswerLabel ? String(q.correctAnswerLabel).trim().toUpperCase() : null,
       userSelection: null

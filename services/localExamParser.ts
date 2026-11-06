@@ -1,5 +1,5 @@
-import { Question } from '../types';
-import { cleanAndDescramblePdfText, autoRepairText } from './textDescrambler';
+import { Question, Option } from '../types';
+import { cleanAndDescramblePdfText, autoRepairText, normalizeTextEncoding } from './textDescrambler';
 
 export interface LocalParseResult {
   title: string;
@@ -8,13 +8,162 @@ export interface LocalParseResult {
 }
 
 /**
- * Parses an exam from a plain text, markdown, or JSON string locally
- * without requiring any external AI API or server.
- * Handles both multiline and inline options (A, B, C, D, E) and tabular answer keys.
- * Automatically descrambles Caesar-shifted subset fonts and custom Turkish encodings.
+ * Standard option order for multiple-choice questions.
+ */
+const STANDARD_OPTION_ORDER = ['A', 'B', 'C', 'D', 'E'];
+
+/**
+ * Extracts multiple-choice options (A, B, C, D, E) from a question text block.
+ * Supports:
+ * - Multiline options: A) ... \n B) ...
+ * - Inline options on same line: A) ...   B) ...   C) ...
+ * - Various separators: A), A., A:, A-, (A), [A]
+ * - Both uppercase (A-E) and lowercase (a-e)
+ * - Shifted subset font options (F, G, H, I, J -> A, B, C, D, E)
+ * Guarantees options are sorted in clean alphabetical order (A -> B -> C -> D -> E).
+ */
+export function extractOptionsFromText(block: string): { questionText: string; options: Option[] } {
+  if (!block || !block.trim()) {
+    return { questionText: '', options: [] };
+  }
+
+  // Regex to match option markers:
+  // Option marker must be preceded by start of line or at least one whitespace
+  // Format: A), (A), [A], A., A:, A-
+  const optRegex = /(?:^|\n|\s+)(?:\(|\[)?([A-Ja-j])(?:\)|\]|[\.\:\-])\s+/g;
+
+  interface RawOptMatch {
+    rawLabel: string;
+    normalizedLabel: string;
+    startIndex: number;
+    textStartIndex: number;
+  }
+
+  const matches: RawOptMatch[] = [];
+  let m: RegExpExecArray | null;
+
+  while ((m = optRegex.exec(block)) !== null) {
+    const rawChar = m[1].toUpperCase();
+    let norm = rawChar;
+
+    // Handle Caesar +5 shifted options (F, G, H, I, J)
+    if (['F', 'G', 'H', 'I', 'J'].includes(rawChar)) {
+      norm = String.fromCharCode(rawChar.charCodeAt(0) - 5);
+    }
+
+    // Only accept valid question options (A through E)
+    if (['A', 'B', 'C', 'D', 'E'].includes(norm)) {
+      matches.push({
+        rawLabel: rawChar,
+        normalizedLabel: norm,
+        startIndex: m.index,
+        textStartIndex: m.index + m[0].length
+      });
+    }
+  }
+
+  // Look for the best sequence of options that starts with 'A'
+  // A valid multiple-choice question must have at least 2 distinct options
+  let bestSequence: RawOptMatch[] = [];
+
+  for (let i = 0; i < matches.length; i++) {
+    if (matches[i].normalizedLabel === 'A') {
+      const candidate: RawOptMatch[] = [matches[i]];
+      let expectedNextIdx = 1; // Expecting 'B'
+
+      for (let j = i + 1; j < matches.length; j++) {
+        const nextOpt = matches[j];
+        if (expectedNextIdx < STANDARD_OPTION_ORDER.length && nextOpt.normalizedLabel === STANDARD_OPTION_ORDER[expectedNextIdx]) {
+          candidate.push(nextOpt);
+          expectedNextIdx++;
+        }
+      }
+
+      if (candidate.length >= 2 && candidate.length > bestSequence.length) {
+        bestSequence = candidate;
+      }
+    }
+  }
+
+  // If no sequence starting with 'A' was found, try any sequence with at least 2 distinct sequential letters
+  if (bestSequence.length < 2 && matches.length >= 2) {
+    // Check if unique labels >= 2
+    const unique = new Map<string, RawOptMatch>();
+    for (const match of matches) {
+      if (!unique.has(match.normalizedLabel)) {
+        unique.set(match.normalizedLabel, match);
+      }
+    }
+    const sorted = Array.from(unique.values()).sort((a, b) => a.startIndex - b.startIndex);
+    if (sorted.length >= 2) {
+      bestSequence = sorted;
+    }
+  }
+
+  if (bestSequence.length < 2) {
+    // No valid option set found in this block
+    return {
+      questionText: block.trim(),
+      options: []
+    };
+  }
+
+  // Question text is everything before the first recognized option
+  const firstOptStart = bestSequence[0].startIndex;
+  let questionStem = block.substring(0, firstOptStart).trim();
+
+  // Extract each option's text
+  const optionsMap = new Map<string, string>();
+
+  for (let i = 0; i < bestSequence.length; i++) {
+    const cur = bestSequence[i];
+    const next = bestSequence[i + 1];
+
+    let optContent = next
+      ? block.substring(cur.textStartIndex, next.startIndex).trim()
+      : block.substring(cur.textStartIndex).trim();
+
+    // Clean up trailing answer notes like "Cevap: C", "Doğru Seçenek: B", etc.
+    optContent = optContent.replace(/(?:Doğru\s*Cevap|Cevap|Yanıt|Doğru\s*Seçenek)[\s:]*[A-Ea-e].*$/i, '').trim();
+
+    // Remove trailing column separators
+    optContent = optContent.replace(/--- Sütun \d+ ---/g, '').trim();
+
+    optionsMap.set(cur.normalizedLabel, autoRepairText(optContent));
+  }
+
+  // Sort options strictly by label: A, B, C, D, E
+  const sortedOptions: Option[] = [];
+  for (const label of STANDARD_OPTION_ORDER) {
+    if (optionsMap.has(label)) {
+      sortedOptions.push({
+        label,
+        text: optionsMap.get(label)!
+      });
+    }
+  }
+
+  // Clean question stem of any trailing inline answer indications
+  questionStem = questionStem.replace(/(?:Doğru\s*Cevap|Cevap|Yanıt|Doğru\s*Seçenek)[\s:]*[A-Ea-e].*$/i, '').trim();
+  questionStem = questionStem.replace(/--- Sütun \d+ ---/g, '').trim();
+
+  return {
+    questionText: autoRepairText(questionStem),
+    options: sortedOptions
+  };
+}
+
+/**
+ * Parses an exam from a plain text, markdown, or PDF-extracted text locally.
+ * Solves:
+ * - Strange/shifted characters (integrated auto-descrambler)
+ * - Wrong option ordering (deterministic A -> B -> C -> D -> E sorting)
+ * - Inconsistent question blocks (smart sequential numbering & premise protection)
+ * - Answer key extraction (tabular, list, and inline formats)
  */
 export function parseTextExamLocally(rawContent: string, fileName?: string): LocalParseResult {
-  const cleaned = cleanAndDescramblePdfText(rawContent).text;
+  const normalized = normalizeTextEncoding(rawContent);
+  const cleaned = cleanAndDescramblePdfText(normalized).text;
   const content = cleaned.trim();
   const defaultTitle = fileName ? fileName.replace(/\.[^/.]+$/, '') : 'Yeni Sınav';
 
@@ -32,19 +181,19 @@ export function parseTextExamLocally(rawContent: string, fileName?: string): Loc
       if (Array.isArray(rawQuestions) && rawQuestions.length > 0) {
         const questions: Question[] = rawQuestions.map((q: any, idx: number) => ({
           id: typeof q.id === 'number' ? q.id : idx + 1,
-          text: q.text || q.question || 'Soru metni',
+          text: autoRepairText(q.text || q.question || 'Soru metni'),
           options: Array.isArray(q.options)
             ? q.options.map((opt: any, oIdx: number) => {
                 if (typeof opt === 'string') {
                   const labelMatch = opt.match(/^([A-Ea-e])[\.\)\-\:]\s*(.*)$/);
                   if (labelMatch) {
-                    return { label: labelMatch[1].toUpperCase(), text: labelMatch[2].trim() };
+                    return { label: labelMatch[1].toUpperCase(), text: autoRepairText(labelMatch[2].trim()) };
                   }
-                  return { label: String.fromCharCode(65 + oIdx), text: opt.trim() };
+                  return { label: STANDARD_OPTION_ORDER[oIdx] || 'A', text: autoRepairText(opt.trim()) };
                 }
                 return {
-                  label: String(opt.label || String.fromCharCode(65 + oIdx)).toUpperCase(),
-                  text: String(opt.text || opt.value || '').trim()
+                  label: String(opt.label || STANDARD_OPTION_ORDER[oIdx] || 'A').toUpperCase(),
+                  text: autoRepairText(String(opt.text || opt.value || '').trim())
                 };
               })
             : [],
@@ -65,8 +214,7 @@ export function parseTextExamLocally(rawContent: string, fileName?: string): Loc
     }
   }
 
-  // 2. Parse plain text / markdown / PDF extracted text
-  // Look for Answer Key block
+  // 2. Extract Answer Key section
   let detectedAnswerKeyRawContent: string | null = null;
   const answerKeyMap: Record<number, string> = {};
 
@@ -81,91 +229,80 @@ export function parseTextExamLocally(rawContent: string, fileName?: string): Loc
     }
   }
 
-  // Remove answer key section from questions body to avoid confusing question parsers
-  let bodyWithoutKey = content;
+  // Remove answer key section from questions body
+  let body = content;
   if (keyMatch && keyMatch.index !== undefined) {
-    bodyWithoutKey = content.slice(0, keyMatch.index) + content.slice(keyMatch.index + keyMatch[0].length);
+    body = content.slice(0, keyMatch.index) + content.slice(keyMatch.index + keyMatch[0].length);
   }
 
-  // Split into question blocks: match lines starting with "1.", "1)", "Soru 1:", "1 -", etc.
-  const questionBlocks = bodyWithoutKey.split(/(?:^|\n)(?=(?:Soru\s*)?\d{1,3}[\.\)\-:]\s+)/i);
+  // Remove common headers and column markers
+  body = body.replace(/--- Sütun \d+ ---/g, '');
+  body = body.replace(/^(?:Sayfa\s*\d+|\d+\s*\/\s*\d+|Page\s*\d+)\s*$/gim, '');
 
-  const questions: Question[] = [];
+  // 3. Segment into Question Blocks
+  // Split on lines that clearly introduce a new question:
+  // e.g. "1.", "Soru 1:", "1)", "1 -", "1:"
+  const rawBlocks = body.split(/(?:^|\n)(?=(?:Soru\s*)?\d{1,3}[\.\)\-:]\s+)/i);
 
-  for (const block of questionBlocks) {
+  const parsedQuestions: Question[] = [];
+  let nextExpectedQuestionId = 1;
+
+  for (const block of rawBlocks) {
     const trimmed = block.trim();
     if (!trimmed) continue;
 
-    // Check if this block starts with a question number
     const headerMatch = trimmed.match(/^(?:Soru\s*)?(\d{1,3})[\.\)\-:]\s*([\s\S]+)$/i);
-    if (!headerMatch) continue;
+    if (!headerMatch) {
+      // If this block doesn't start with a number but we have a previous question,
+      // it might be an orphaned option or continuation
+      if (parsedQuestions.length > 0 && trimmed.length > 0) {
+        const lastQ = parsedQuestions[parsedQuestions.length - 1];
+        if (lastQ.options.length === 0) {
+          const reExtracted = extractOptionsFromText(lastQ.text + '\n' + trimmed);
+          if (reExtracted.options.length > 0) {
+            lastQ.text = reExtracted.questionText;
+            lastQ.options = reExtracted.options;
+          }
+        }
+      }
+      continue;
+    }
 
     const questionNumber = parseInt(headerMatch[1], 10);
-    const fullContent = headerMatch[2].trim();
+    const contentAfterNumber = headerMatch[2].trim();
 
-    // Supports both multiline (A) ... \n B) ...) and inline (A) ... B) ... C) ...)
-    const optionRegex = /(?:^|\n|\s{2,})\s*\(?([A-Ea-e])[\)\.\-:]\s+/g;
-    const optIndices: { label: string; start: number; end: number }[] = [];
+    // Extract question text and options
+    const { questionText, options } = extractOptionsFromText(contentAfterNumber);
 
-    let match: RegExpExecArray | null;
-    while ((match = optionRegex.exec(fullContent)) !== null) {
-      optIndices.push({
-        label: match[1].toUpperCase(),
-        start: match.index,
-        end: match.index + match[0].length
-      });
-    }
-
-    let questionText = fullContent;
-    const options: { label: string; text: string }[] = [];
-
-    if (optIndices.length >= 2) {
-      // Must have at least 2 options to be recognized as options
-      questionText = fullContent.substring(0, optIndices[0].start).trim();
-
-      for (let i = 0; i < optIndices.length; i++) {
-        const cur = optIndices[i];
-        const next = optIndices[i + 1];
-        let optText = next
-          ? fullContent.substring(cur.end, next.start).trim()
-          : fullContent.substring(cur.end).trim();
-
-        // Remove trailing answer indicators like "Cevap: B", "Doğru: C"
-        optText = optText.replace(/(?:Doğru\s*Cevap|Cevap|Yanıt)[\s:]*[A-Ea-e].*$/i, '').trim();
-
-        options.push({
-          label: cur.label,
-          text: autoRepairText(optText)
-        });
-      }
-    }
-
-    // Look for an inline answer key in the question block: "Cevap: B", "Yanıt: A", "Doğru Cevap: C"
+    // Look for inline answer key
     let correctAnswerLabel: string | null = answerKeyMap[questionNumber] || null;
     if (!correctAnswerLabel) {
-      const inlineKeyMatch = trimmed.match(/(?:Doğru\s*Cevap|Cevap|Yanıt)[\s:]*([A-Ea-e])/i);
-      if (inlineKeyMatch) {
-        correctAnswerLabel = inlineKeyMatch[1].toUpperCase();
+      const inlineMatch = trimmed.match(/(?:Doğru\s*Cevap|Cevap|Yanıt|Doğru\s*Seçenek)[\s:]*([A-Ea-e])/i);
+      if (inlineMatch) {
+        correctAnswerLabel = inlineMatch[1].toUpperCase();
       }
     }
 
-    // Clean up question text if it still contains inline answer text
-    questionText = questionText.replace(/(?:Doğru\s*Cevap|Cevap|Yanıt)[\s:]*[A-Ea-e].*$/i, '').trim();
+    // Determine final question ID
+    const qId = questionNumber || nextExpectedQuestionId;
+    nextExpectedQuestionId = qId + 1;
 
-    if (questionText || options.length > 0) {
-      questions.push({
-        id: questionNumber || questions.length + 1,
-        text: autoRepairText(questionText || `Soru ${questionNumber}`),
-        options,
-        correctAnswerLabel,
-        userSelection: null
-      });
-    }
+    parsedQuestions.push({
+      id: qId,
+      text: autoRepairText(questionText || `Soru ${qId}`),
+      options,
+      correctAnswerLabel,
+      userSelection: null
+    });
   }
+
+  // Post-process: If any questions ended up with 0 options because options were placed at the bottom,
+  // ensure everything is clean and properly formatted
+  const finalQuestions = parsedQuestions.filter(q => q.text.trim().length > 0 || q.options.length > 0);
 
   return {
     title: defaultTitle,
-    questions,
+    questions: finalQuestions,
     detectedAnswerKeyRawContent
   };
 }

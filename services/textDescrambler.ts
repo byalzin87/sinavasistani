@@ -44,14 +44,24 @@ const COMMON_REPAIR_MAP: Record<string, string> = {
  * Checks if a token/word has characteristics of a shifted subset font:
  * - Special glyphs like ^, [, ], \, _, ¾, ġ, ó, á, ½, þ, ý, ð
  * - Non-Turkish alphabet characters Q, W, X inside Turkish exam text
- * - Repetitive unusual patterns like JJ (e.g. RFIIJQJWJ -> MADDELERE)
+ * - Repetitive unusual patterns like JJ or any J in uppercase words (E shifted to J)
  */
-export const SHIFTED_INDICATOR = /[\^\[\]\\_¾ġóá½þýð]|(?:\b[A-Za-z]*[QWXqwx][A-Za-z]*\b)|[jJ]{2}/;
+export const SHIFTED_INDICATOR = /[\^\[\]\\_¾ġóá½þýð]|[QWXqwx]|[jJ]{2}|(?:[A-Z]{2,}[J][A-Z]*)|(?:[A-Z]*[J][A-Z]{2,})/;
+
+/**
+ * Checks if a line or token looks shifted.
+ */
+export function isShifted(text: string): boolean {
+  if (!text) return false;
+  return SHIFTED_INDICATOR.test(text) || /\b[F-Jf-j][\.\)\-\:]\s+/.test(text);
+}
 
 /**
  * Descrambles an individual word shifted by a linear offset (default: +5).
  */
 export function descrambleWord(word: string, shift = 5): string {
+  if (!word) return '';
+
   let res = '';
   for (let i = 0; i < word.length; i++) {
     const c = word[i];
@@ -93,17 +103,29 @@ export function descrambleWord(word: string, shift = 5): string {
 
 /**
  * Cleans text line-by-line and token-by-token.
- * Unshifted lines (headers, normal questions) remain intact.
- * Shifted lines and tokens are precisely descrambled into proper Turkish.
+ * Unshifted lines (standard headers) remain intact.
+ * Shifted lines are completely descrambled word-by-word into proper Turkish.
  */
 export function cleanAndDescramblePdfText(rawText: string): { text: string; isClean: boolean; shiftApplied?: number } {
   if (!rawText || rawText.trim().length === 0) {
     return { text: '', isClean: false };
   }
 
+  const rawLines = rawText.split('\n');
+
+  // Count shifted indicators across the whole document
+  let totalShiftedLines = 0;
+  for (const line of rawLines) {
+    if (isShifted(line)) {
+      totalShiftedLines++;
+    }
+  }
+
+  const isDocumentPrimarilyShifted = totalShiftedLines >= 2 || (totalShiftedLines > 0 && totalShiftedLines / Math.max(1, rawLines.length) > 0.15);
+
   let anyShiftedFound = false;
 
-  const lines = rawText.split('\n').map((line) => {
+  const lines = rawLines.map((line) => {
     // 1. Shifted options check: If a line starts with F) G) H) I) J), shift back to A) B) C) D) E)
     let processedLine = line.replace(/^([F-Jf-j])([\.\)\-\:])/g, (m, opt, sep) => {
       anyShiftedFound = true;
@@ -118,20 +140,19 @@ export function cleanAndDescramblePdfText(rawText: string): { text: string; isCl
       return sp1 + origOpt + sep + sp2;
     });
 
-    // 2. Token-by-token descramble if shifted indicators exist on this line
-    if (SHIFTED_INDICATOR.test(processedLine)) {
+    const lineIsShifted = isShifted(processedLine) || (isDocumentPrimarilyShifted && !/^(?:T\.C\.|MİLLİ|BAKANLIĞI|SINAV|SAYFA|PAGE|\d+)/i.test(processedLine.trim()));
+
+    // 2. Descramble words if line is shifted
+    if (lineIsShifted) {
       anyShiftedFound = true;
       return processedLine.replace(/[^\s]+/g, (token) => {
-        // Preserve standalone numbers, symbols or punctuation
-        if (/^[\d\.,\(\)\-\:\;\?\!]+$/.test(token)) {
+        // Preserve standalone numbers, symbols, question numbers or punctuation (e.g. "1.", "(A)", "---", "50%")
+        if (/^[\d\.,\(\)\-\:\;\?\!\%\/]+$/.test(token)) {
           return token;
         }
 
-        if (SHIFTED_INDICATOR.test(token)) {
-          return descrambleWord(token, 5);
-        }
-
-        return token;
+        // Descramble the word token
+        return descrambleWord(token, 5);
       });
     }
 
@@ -151,7 +172,7 @@ export function cleanAndDescramblePdfText(rawText: string): { text: string; isCl
  */
 export function autoRepairText(str: string): string {
   if (!str) return '';
-  if (SHIFTED_INDICATOR.test(str)) {
+  if (isShifted(str)) {
     return cleanAndDescramblePdfText(str).text;
   }
   return str;

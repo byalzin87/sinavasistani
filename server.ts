@@ -61,9 +61,15 @@ const COMMON_REPAIR_MAP: Record<string, string> = {
   MADDELERE: 'MADDELERE', DAYANIKLI: 'DAYANIKLI', OLMASI: 'OLMASI', KARŞI: 'KARŞI'
 };
 
-const SHIFTED_INDICATOR = /[\^\[\]\\_¾ġóá½þýð]|(?:\b[A-Za-z]*[QWXqwx][A-Za-z]*\b)|[jJ]{2}/;
+const SHIFTED_INDICATOR = /[\^\[\]\\_¾ġóá½þýð]|[QWXqwx]|[jJ]{2}|(?:[A-Z]{2,}[J][A-Z]*)|(?:[A-Z]*[J][A-Z]{2,})/;
+
+function isShifted(text: string): boolean {
+  if (!text) return false;
+  return SHIFTED_INDICATOR.test(text) || /\b[F-Jf-j][\.\)\-\:]\s+/.test(text);
+}
 
 function descrambleWord(word: string, shift = 5): string {
+  if (!word) return '';
   let res = '';
   for (let i = 0; i < word.length; i++) {
     const c = word[i];
@@ -84,18 +90,25 @@ function descrambleWord(word: string, shift = 5): string {
 
 function cleanAndDescramblePdfText(rawText: string): string {
   if (!rawText) return '';
-  return rawText.split('\n').map((line) => {
+  const rawLines = rawText.split('\n');
+  let totalShifted = 0;
+  for (const line of rawLines) {
+    if (isShifted(line)) totalShifted++;
+  }
+  const isDocShifted = totalShifted >= 2 || (totalShifted > 0 && totalShifted / Math.max(1, rawLines.length) > 0.15);
+
+  return rawLines.map((line) => {
     let processed = line.replace(/^([F-Jf-j])([\.\)\-\:])/g, (m, opt, sep) => {
       return String.fromCharCode(opt.toUpperCase().charCodeAt(0) - 5) + sep;
     });
     processed = processed.replace(/(\s+)([F-Jf-j])([\.\)\-\:])(\s+)/g, (m, sp1, opt, sep, sp2) => {
       return sp1 + String.fromCharCode(opt.toUpperCase().charCodeAt(0) - 5) + sep + sp2;
     });
-    if (SHIFTED_INDICATOR.test(processed)) {
+    const lineShifted = isShifted(processed) || (isDocShifted && !/^(?:T\.C\.|MİLLİ|BAKANLIĞI|SINAV|SAYFA|PAGE|\d+)/i.test(processed.trim()));
+    if (lineShifted) {
       return processed.replace(/[^\s]+/g, (token) => {
-        if (/^[\d\.,\(\)\-\:\;\?\!]+$/.test(token)) return token;
-        if (SHIFTED_INDICATOR.test(token)) return descrambleWord(token, 5);
-        return token;
+        if (/^[\d\.,\(\)\-\:\;\?\!\%\/]+$/.test(token)) return token;
+        return descrambleWord(token, 5);
       });
     }
     return processed;
@@ -104,7 +117,7 @@ function cleanAndDescramblePdfText(rawText: string): string {
 
 function autoRepairText(str: string): string {
   if (!str) return '';
-  if (SHIFTED_INDICATOR.test(str)) {
+  if (isShifted(str)) {
     return cleanAndDescramblePdfText(str);
   }
   return str;

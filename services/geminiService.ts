@@ -31,118 +31,122 @@ export const parseExamFile = async (
 
   const textToFallback = isText ? data : (fallbackText || '');
 
-  try {
-    const response = await fetch('/api/parse-exam', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        data,
-        mimeType,
-        fileName: fileName || 'Sınav Dosyası'
-      })
-    });
+  const endpointsToTry = ['/api/parse-exam'];
+  if (typeof window !== 'undefined' && (window.location.hostname.includes('github.io') || window.location.protocol === 'file:')) {
+    endpointsToTry.push('https://sinavasistani-two.vercel.app/api/parse-exam');
+  }
 
-    const rawText = await response.text();
-    let result: any = null;
+  let lastResponseStatus = 0;
+  let lastRawText = '';
 
+  for (const endpoint of endpointsToTry) {
     try {
-      result = rawText ? JSON.parse(rawText) : {};
-    } catch {
-      console.error('Non-JSON response from /api/parse-exam:', rawText);
-      // Fallback to local parser if text content is available
-      if (textToFallback && textToFallback.trim().length > 0) {
-        const local = parseTextExamLocally(textToFallback, fileName);
-        if (local.questions.length > 0) {
-          return local;
-        }
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          data,
+          mimeType,
+          fileName: fileName || 'Sınav Dosyası'
+        })
+      });
+
+      lastResponseStatus = response.status;
+      lastRawText = await response.text();
+
+      if (response.status === 404 && endpoint !== endpointsToTry[endpointsToTry.length - 1]) {
+        // Try next endpoint (e.g. Vercel backend when on GitHub Pages)
+        continue;
       }
 
-      if (response.status === 404 || rawText.includes('The page could not be found')) {
+      let result: any = null;
+      try {
+        result = lastRawText ? JSON.parse(lastRawText) : {};
+      } catch {
+        // Continue to fallback or error
+      }
+
+      if (response.ok && result && Array.isArray(result.questions) && result.questions.length > 0) {
+        const questions: Question[] = result.questions.map((q: any, idx: number) => ({
+          id: typeof q.id === 'number' ? q.id : idx + 1,
+          text: autoRepairText(q.text || 'Soru metni okunamadı'),
+          options: Array.isArray(q.options)
+            ? q.options
+                .map((opt: any) => ({
+                  label: String(opt.label || '').trim().toUpperCase(),
+                  text: autoRepairText(String(opt.text || '').trim())
+                }))
+                .sort((a: any, b: any) => (a.label || '').localeCompare(b.label || ''))
+            : [],
+          correctAnswerLabel: q.correctAnswerLabel ? String(q.correctAnswerLabel).trim().toUpperCase() : null,
+          userSelection: null
+        }));
+
         return {
-          title: 'Hata: API Uç Noktası Bulunamadı',
-          questions: [],
-          errorMessage:
-            'Sunucu API uç noktasına ulaşılamadı (404: /api/parse-exam). Vercel kullanıyorsanız projenizin Settings > Environment Variables bölümüne GEMINI_API_KEY eklediğinizden ve son güncellemeleri GitHub üzerinden yeniden dağıttığınızdan (Redeploy) emin olun.'
+          title: result.title || fileName || 'Yeni Sınav',
+          questions,
+          detectedAnswerKeyRawContent: result.detectedAnswerKeyRawContent || null
         };
       }
-      return {
-        title: 'Hata: Sunucu Yanıtı Geçersiz',
-        questions: [],
-        errorMessage: `Sunucudan geçersiz bir yanıt alındı (${response.status}): ${rawText.slice(0, 120)}`
-      };
-    }
 
-    if (!response.ok) {
-      const errorMsg = result?.error || `Sunucu hatası (${response.status})`;
-      const isMissingKey =
-        result?.code === 'MISSING_GEMINI_API_KEY' ||
-        String(errorMsg).includes('GEMINI_API_KEY') ||
-        String(errorMsg).includes('ortam değişkeni');
+      if (!response.ok) {
+        const errorMsg = result?.error || `Sunucu hatası (${response.status})`;
+        const isMissingKey =
+          result?.code === 'MISSING_GEMINI_API_KEY' ||
+          String(errorMsg).includes('GEMINI_API_KEY') ||
+          String(errorMsg).includes('ortam değişkeni');
 
-      // Check local parser fallback first before returning error!
-      if (textToFallback && textToFallback.trim().length > 0) {
-        const local = parseTextExamLocally(textToFallback, fileName);
-        if (local.questions.length > 0) {
-          return local;
+        if (isMissingKey) {
+          // If server reported missing API key, try local parser fallback
+          if (textToFallback && textToFallback.trim().length > 0) {
+            const local = parseTextExamLocally(textToFallback, fileName);
+            if (local.questions.length > 0) {
+              return local;
+            }
+          }
+
+          return {
+            title: 'GEMINI_API_KEY Gerekli',
+            questions: [],
+            isMissingApiKey: true,
+            errorMessage:
+              'Vercel üzerinde GEMINI_API_KEY ortam değişkeni bulunamadı. Taranmış görsel PDF dosyalarını okumak için Google AI Studio üzerinden tamamen ücretsiz bir API anahtarı alıp Vercel Dashboard > Project Settings > Environment Variables bölümüne GEMINI_API_KEY olarak ekleyebilirsiniz.'
+          };
         }
       }
-
-      console.error('Parse exam server error:', errorMsg);
-      return {
-        title: isMissingKey ? 'GEMINI_API_KEY Gerekli' : 'Hata: Dosya Okunamadı',
-        questions: [],
-        isMissingApiKey: isMissingKey,
-        errorMessage: isMissingKey
-          ? 'Vercel üzerinde GEMINI_API_KEY ortam değişkeni bulunamadı. Taranmış görsel PDF dosyalarını okumak için Google AI Studio üzerinden ücretsiz bir API anahtarı ekleyebilir veya dijital metin içeren bir PDF/TXT dosyası yükleyebilirsiniz.'
-          : errorMsg
-      };
-    }
-
-    const questions: Question[] = (result.questions || []).map((q: any, idx: number) => ({
-      id: typeof q.id === 'number' ? q.id : idx + 1,
-      text: autoRepairText(q.text || 'Soru metni okunamadı'),
-      options: Array.isArray(q.options)
-        ? q.options
-            .map((opt: any) => ({
-              label: String(opt.label || '').trim().toUpperCase(),
-              text: autoRepairText(String(opt.text || '').trim())
-            }))
-            .sort((a: any, b: any) => (a.label || '').localeCompare(b.label || ''))
-        : [],
-      correctAnswerLabel: q.correctAnswerLabel ? String(q.correctAnswerLabel).trim().toUpperCase() : null,
-      userSelection: null
-    }));
-
-    // If server returned 0 questions but we have fallback text, try local parser
-    if (questions.length === 0 && textToFallback && textToFallback.trim().length > 0) {
-      const local = parseTextExamLocally(textToFallback, fileName);
-      if (local.questions.length > 0) {
-        return local;
+    } catch (endpointErr) {
+      console.warn(`Endpoint ${endpoint} failed:`, endpointErr);
+      if (endpoint !== endpointsToTry[endpointsToTry.length - 1]) {
+        continue;
       }
     }
+  }
 
-    return {
-      title: result.title || fileName || 'Yeni Sınav',
-      questions,
-      detectedAnswerKeyRawContent: result.detectedAnswerKeyRawContent || null
-    };
-  } catch (error: any) {
-    console.error('parseExamFile network error:', error);
-
-    // If network failed, run local parser
-    if (textToFallback && textToFallback.trim().length > 0) {
-      const local = parseTextExamLocally(textToFallback, fileName);
-      if (local.questions.length > 0) {
-        return local;
-      }
+  // Fallback to local parser if server endpoints failed or returned no questions
+  if (textToFallback && textToFallback.trim().length > 0) {
+    const local = parseTextExamLocally(textToFallback, fileName);
+    if (local.questions.length > 0) {
+      return local;
     }
+  }
 
+  if (lastResponseStatus === 404) {
     return {
-      title: 'Hata: Bağlantı Kurulamadı',
+      title: 'Hata: API Uç Noktası Bulunamadı',
       questions: [],
-      errorMessage: error?.message || 'Sunucuya bağlanırken bir ağ hatası oluştu.'
+      errorMessage:
+        'Sunucu API uç noktasına ulaşılamadı. Vercel panonuzda (Settings > Environment Variables) GEMINI_API_KEY anahtarını eklediğinizden ve Vercel linkiniz üzerinden işlem yaptığınızdan emin olun.'
     };
   }
+
+  return {
+    title: 'Hata: Dosya Çözümlenemedi',
+    questions: [],
+    errorMessage:
+      lastRawText && lastRawText.length < 200
+        ? lastRawText
+        : 'Dosyadan soru çıkarılamadı. Özel font içeren PDF dosyalarında görsel yapay zeka OCR modunun devreye girmesi için Vercel üzerinde GEMINI_API_KEY tanımlanmalıdır.'
+  };
 };

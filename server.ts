@@ -301,7 +301,7 @@ async function parseExamWithGemini(input: { data: string; mimeType: string; file
   });
 
   const generateWithRetry = async () => {
-    const models = ['gemini-3.8-flash', 'gemini-2.5-flash'];
+    const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
     let lastError: any = null;
 
     for (const model of models) {
@@ -373,9 +373,14 @@ async function parseExamWithGemini(input: { data: string; mimeType: string; file
       } catch (err: any) {
         lastError = err;
         const errStr = String(err?.message || err);
-        console.warn(`Model ${model} hatası:`, errStr.slice(0, 100));
+        console.warn(`Model ${model} uyarısı:`, errStr.slice(0, 100));
+
+        if (errStr.includes('API key not valid') || errStr.includes('INVALID_ARGUMENT')) {
+          throw new Error('Eklenen GEMINI_API_KEY anahtarı geçerli değil. Lütfen Google AI Studio üzerinden geçerli bir API anahtarı ekleyiniz.');
+        }
+
         const isTransient =
-          errStr.includes('503') || errStr.includes('UNAVAILABLE') || errStr.includes('high demand');
+          errStr.includes('503') || errStr.includes('UNAVAILABLE') || errStr.includes('high demand') || errStr.includes('429');
         if (isTransient) {
           continue;
         }
@@ -389,7 +394,7 @@ async function parseExamWithGemini(input: { data: string; mimeType: string; file
   try {
     response = await generateWithRetry();
   } catch (err: any) {
-    if (isText) {
+    if (isText && data) {
       const fallback = parseTextExamLocally(data, fileName);
       if (fallback.questions.length > 0) {
         return fallback;
@@ -400,7 +405,9 @@ async function parseExamWithGemini(input: { data: string; mimeType: string; file
     try {
       const parsed = JSON.parse(errorMessage);
       if (parsed?.error?.message) {
-        if (parsed.error.code === 429 || parsed.error.status === 'RESOURCE_EXHAUSTED') {
+        if (parsed.error.code === 400 && String(parsed.error.message).includes('API key not valid')) {
+          errorMessage = 'Eklenen GEMINI_API_KEY geçerli değil. Lütfen Google AI Studio üzerinden aldığınız geçerli anahtarı ekleyiniz.';
+        } else if (parsed.error.code === 429 || parsed.error.status === 'RESOURCE_EXHAUSTED') {
           errorMessage = 'Dakika başına istek kotası aşıldı. Lütfen 15-20 saniye bekleyip tekrar deneyiniz.';
         } else if (parsed.error.code === 503 || parsed.error.status === 'UNAVAILABLE') {
           errorMessage = 'Yapay zeka sunucuları geçici olarak yoğun. Lütfen birkaç saniye sonra tekrar deneyiniz.';

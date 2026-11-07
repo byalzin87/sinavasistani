@@ -17,13 +17,41 @@ export const fileToBase64 = (file: File): Promise<string> => {
   });
 };
 
-export const fileToText = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsText(file);
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = (error) => reject(error);
-  });
+export const fileToText = async (file: File): Promise<string> => {
+  try {
+    const buffer = await file.arrayBuffer();
+    // Standard UTF-8 decoding
+    const utf8Decoder = new TextDecoder('utf-8', { fatal: false });
+    let text = utf8Decoder.decode(buffer);
+
+    // If replacement character is present, attempt Windows-1254 (Turkish ANSI)
+    if (text.includes('\uFFFD')) {
+      try {
+        const winDecoder = new TextDecoder('windows-1254', { fatal: false });
+        const winText = winDecoder.decode(buffer);
+        if (!winText.includes('\uFFFD')) {
+          text = winText;
+        }
+      } catch {
+        // fallback to utf8
+      }
+    }
+
+    // Strip UTF-8 BOM if present
+    if (text.charCodeAt(0) === 0xFEFF) {
+      text = text.slice(1);
+    }
+
+    return text;
+  } catch (err) {
+    console.warn('fileToText buffer decoding fallback to FileReader:', err);
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsText(file, 'UTF-8');
+      reader.onload = () => resolve(reader.result as string || '');
+      reader.onerror = (error) => reject(error);
+    });
+  }
 };
 
 export const getMimeType = (file: File): string => {

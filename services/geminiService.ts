@@ -1,6 +1,6 @@
 import { Question } from '../types';
 import { parseTextExamLocally } from './localExamParser';
-import { autoRepairText } from './textDescrambler';
+import { autoRepairText, enforceUtf8AndNormalize } from './textDescrambler';
 
 export interface ParseExamResponse {
   title: string;
@@ -15,6 +15,7 @@ export interface ParseExamResponse {
  * to extract questions, multiple-choice options, and map the answer key.
  * If server-side API key is missing or server fails, automatically falls back to
  * zero-cost client-side local parser.
+ * Applies UTF-8 enforcement and normalization across all platforms.
  */
 export const parseExamFile = async (
   data: string,
@@ -29,7 +30,9 @@ export const parseExamFile = async (
     mimeType === 'text/markdown' ||
     mimeType === 'text/csv';
 
-  const textToFallback = isText ? data : (fallbackText || '');
+  const normalizedData = isText ? enforceUtf8AndNormalize(data) : data;
+  const normalizedFallback = enforceUtf8AndNormalize(fallbackText || '');
+  const textToFallback = isText ? normalizedData : normalizedFallback;
 
   const endpointsToTry = ['/api/parse-exam'];
   if (typeof window !== 'undefined' && (window.location.hostname.includes('github.io') || window.location.protocol === 'file:')) {
@@ -44,10 +47,10 @@ export const parseExamFile = async (
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json; charset=utf-8'
         },
         body: JSON.stringify({
-          data,
+          data: normalizedData,
           mimeType,
           fileName: fileName || 'Sınav Dosyası'
         })
@@ -71,12 +74,12 @@ export const parseExamFile = async (
       if (response.ok && result && Array.isArray(result.questions) && result.questions.length > 0) {
         const questions: Question[] = result.questions.map((q: any, idx: number) => ({
           id: typeof q.id === 'number' ? q.id : idx + 1,
-          text: autoRepairText(q.text || 'Soru metni okunamadı'),
+          text: enforceUtf8AndNormalize(autoRepairText(q.text || 'Soru metni okunamadı')),
           options: Array.isArray(q.options)
             ? q.options
                 .map((opt: any) => ({
                   label: String(opt.label || '').trim().toUpperCase(),
-                  text: autoRepairText(String(opt.text || '').trim())
+                  text: enforceUtf8AndNormalize(autoRepairText(String(opt.text || '').trim()))
                 }))
                 .sort((a: any, b: any) => (a.label || '').localeCompare(b.label || ''))
             : [],
@@ -85,9 +88,9 @@ export const parseExamFile = async (
         }));
 
         return {
-          title: result.title || fileName || 'Yeni Sınav',
+          title: enforceUtf8AndNormalize(result.title || fileName || 'Yeni Sınav'),
           questions,
-          detectedAnswerKeyRawContent: result.detectedAnswerKeyRawContent || null
+          detectedAnswerKeyRawContent: result.detectedAnswerKeyRawContent ? enforceUtf8AndNormalize(result.detectedAnswerKeyRawContent) : null
         };
       }
 

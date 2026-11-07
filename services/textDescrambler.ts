@@ -28,18 +28,82 @@ const SPECIAL_GLYPHS: Record<string, string> = {
   '_': 'Z'
 };
 
-export function normalizeTextEncoding(str: string): string {
+/**
+ * Enforces UTF-8 canonical representation and cleans encoding glitches:
+ * - NFC Unicode normalization
+ * - Turkish UTF-8 double-encoding (mojibake) repair (Ã§ -> ç, ÄŸ -> ğ, etc.)
+ * - Non-breaking spaces and hidden control character removal
+ * - Windows-1254 misinterpretation fixes
+ * - Quote, dash, and ligature standardization
+ */
+export function enforceUtf8AndNormalize(str: string): string {
   if (!str) return '';
-  return str
-    .replace(/\u00A0/g, ' ')
-    .replace(/[\u00AD\u200B\u200C\u200D\uFEFF]/g, '')
+
+  let normalized = str;
+
+  // Canonical Unicode Normalization (NFC)
+  try {
+    normalized = normalized.normalize('NFC');
+  } catch {
+    // fallback
+  }
+
+  // Strip BOM, soft hyphens, zero-width characters, non-printable controls
+  normalized = normalized
+    .replace(/\uFEFF/g, '')
+    .replace(/\u00AD/g, '')
+    .replace(/[\u200B\u200C\u200D]/g, '')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+
+  // Convert non-breaking spaces
+  normalized = normalized.replace(/[\u00A0\u202F\u2007]/g, ' ');
+
+  // Standardize ligatures
+  normalized = normalized
     .replace(/\uFB00/g, 'ff')
     .replace(/\uFB01/g, 'fi')
     .replace(/\uFB02/g, 'fl')
     .replace(/\uFB03/g, 'ffi')
-    .replace(/\uFB04/g, 'ffl')
-    .replace(/[\u2018\u2019]/g, "'")
-    .replace(/[\u201C\u201D]/g, '"');
+    .replace(/\uFB04/g, 'ffl');
+
+  // Standardize quotes and dashes
+  normalized = normalized
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/[\u2013\u2014]/g, '-');
+
+  // Turkish UTF-8 Mojibake repairs (double-encoded UTF-8 bytes)
+  normalized = normalized
+    .replace(/Ã§/g, 'ç')
+    .replace(/Ã‡/g, 'Ç')
+    .replace(/ÄŸ/g, 'ğ')
+    .replace(/Äž/g, 'Ğ')
+    .replace(/Ä±/g, 'ı')
+    .replace(/Ä°/g, 'İ')
+    .replace(/Ã¶/g, 'ö')
+    .replace(/Ã–/g, 'Ö')
+    .replace(/ÅŸ/g, 'ş')
+    .replace(/Åž/g, 'Ş')
+    .replace(/Ã¼/g, 'ü')
+    .replace(/Ãœ/g, 'Ü')
+    .replace(/Ã¢/g, 'â')
+    .replace(/Ã®/g, 'î')
+    .replace(/Ã»/g, 'û');
+
+  // Windows-1254 single byte misinterpretations
+  normalized = normalized
+    .replace(/Ý/g, 'İ')
+    .replace(/ý/g, 'ı')
+    .replace(/Þ/g, 'Ş')
+    .replace(/þ/g, 'ş')
+    .replace(/Ð/g, 'Ğ')
+    .replace(/ð/g, 'ğ');
+
+  return normalized;
+}
+
+export function normalizeTextEncoding(str: string): string {
+  return enforceUtf8AndNormalize(str);
 }
 
 const COMMON_REPAIR_MAP: Record<string, string> = {

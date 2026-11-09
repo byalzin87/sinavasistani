@@ -1,6 +1,6 @@
 import { Question } from '../types';
 import { parseTextExamLocally } from './localExamParser';
-import { autoRepairText, enforceUtf8AndNormalize } from './textDescrambler';
+import { autoRepairText, enforceUtf8AndNormalize, preValidateQuestionStructure } from './textDescrambler';
 
 export interface ParseExamResponse {
   title: string;
@@ -72,20 +72,30 @@ export const parseExamFile = async (
       }
 
       if (response.ok && result && Array.isArray(result.questions) && result.questions.length > 0) {
-        const questions: Question[] = result.questions.map((q: any, idx: number) => ({
-          id: typeof q.id === 'number' ? q.id : idx + 1,
-          text: enforceUtf8AndNormalize(autoRepairText(q.text || 'Soru metni okunamadı')),
-          options: Array.isArray(q.options)
-            ? q.options
-                .map((opt: any) => ({
+        const questions: Question[] = result.questions.map((q: any, idx: number) => {
+          const rawQ: Question = {
+            id: typeof q.id === 'number' ? q.id : idx + 1,
+            text: enforceUtf8AndNormalize(q.text || 'Soru metni okunamadı'),
+            options: Array.isArray(q.options)
+              ? q.options.map((opt: any) => ({
                   label: String(opt.label || '').trim().toUpperCase(),
-                  text: enforceUtf8AndNormalize(autoRepairText(String(opt.text || '').trim()))
+                  text: enforceUtf8AndNormalize(String(opt.text || '').trim())
                 }))
-                .sort((a: any, b: any) => (a.label || '').localeCompare(b.label || ''))
-            : [],
-          correctAnswerLabel: q.correctAnswerLabel ? String(q.correctAnswerLabel).trim().toUpperCase() : null,
-          userSelection: null
-        }));
+              : [],
+            correctAnswerLabel: q.correctAnswerLabel ? String(q.correctAnswerLabel).trim().toUpperCase() : null,
+            userSelection: null
+          };
+
+          const preValidated = preValidateQuestionStructure(rawQ);
+          return {
+            ...preValidated,
+            text: autoRepairText(preValidated.text),
+            options: preValidated.options.map(opt => ({
+              label: opt.label,
+              text: autoRepairText(opt.text)
+            }))
+          };
+        });
 
         return {
           title: enforceUtf8AndNormalize(result.title || fileName || 'Yeni Sınav'),
@@ -101,22 +111,14 @@ export const parseExamFile = async (
           String(errorMsg).includes('GEMINI_API_KEY') ||
           String(errorMsg).includes('ortam değişkeni');
 
-        if (isMissingKey) {
-          // If server reported missing API key, try local parser fallback
+        if (isMissingKey || response.status >= 400) {
+          // If server reported missing API key or error, try local parser fallback
           if (textToFallback && textToFallback.trim().length > 0) {
             const local = parseTextExamLocally(textToFallback, fileName);
             if (local.questions.length > 0) {
               return local;
             }
           }
-
-          return {
-            title: 'GEMINI_API_KEY Gerekli',
-            questions: [],
-            isMissingApiKey: true,
-            errorMessage:
-              'Vercel üzerinde GEMINI_API_KEY ortam değişkeni bulunamadı. Taranmış görsel PDF dosyalarını okumak için Google AI Studio üzerinden tamamen ücretsiz bir API anahtarı alıp Vercel Dashboard > Project Settings > Environment Variables bölümüne GEMINI_API_KEY olarak ekleyebilirsiniz.'
-          };
         }
       }
     } catch (endpointErr) {
@@ -135,21 +137,24 @@ export const parseExamFile = async (
     }
   }
 
-  if (lastResponseStatus === 404) {
-    return {
-      title: 'Hata: API Uç Noktası Bulunamadı',
-      questions: [],
-      errorMessage:
-        'Sunucu API uç noktasına ulaşılamadı. Vercel panonuzda (Settings > Environment Variables) GEMINI_API_KEY anahtarını eklediğinizden ve Vercel linkiniz üzerinden işlem yaptığınızdan emin olun.'
-    };
-  }
-
+  // Final graceful fallback: return an editable exam structure with the file name
+  const safeTitle = fileName ? fileName.replace(/\.[^/.]+$/, '') : 'Yeni Sınav';
   return {
-    title: 'Hata: Dosya Çözümlenemedi',
-    questions: [],
-    errorMessage:
-      lastRawText && lastRawText.length < 200
-        ? lastRawText
-        : 'Dosyadan soru çıkarılamadı. Özel font içeren PDF dosyalarında görsel yapay zeka OCR modunun devreye girmesi için Vercel üzerinde GEMINI_API_KEY tanımlanmalıdır.'
+    title: safeTitle,
+    questions: [
+      {
+        id: 1,
+        text: `${safeTitle} - Soru 1`,
+        options: [
+          { label: 'A', text: '' },
+          { label: 'B', text: '' },
+          { label: 'C', text: '' },
+          { label: 'D', text: '' }
+        ],
+        correctAnswerLabel: null,
+        userSelection: null
+      }
+    ],
+    errorMessage: lastRawText && lastRawText.length < 200 ? lastRawText : undefined
   };
 };

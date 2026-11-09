@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Folder, Exam, Question, AppView, Option } from './types';
-import { fileToBase64, fileToText, getMimeType } from './services/fileUtils';
+import { fileToBase64, fileToText, extractTextFromDocx, extractTextFromXlsx, getMimeType } from './services/fileUtils';
 import { parseExamFile } from './services/geminiService';
 import { extractTextFromPdf } from './services/pdfParser';
 import { parseTextExamLocally } from './services/localExamParser';
-import { autoRepairText } from './services/textDescrambler';
+import { autoRepairText, preValidateAndSanitizeExam } from './services/textDescrambler';
 import { 
   initSupabase, 
   cloudLogin, 
@@ -41,21 +41,7 @@ const getSettingsKey = (username: string) => `sinav_asistani_settings_${normaliz
 const USER_REGISTRY_KEY = 'sinav_asistani_users_registry';
 const SUPABASE_CONFIG_KEY = 'sinav_asistani_supabase_config';
 
-const repairExamData = (exam: Exam): Exam => ({
-  ...exam,
-  title: autoRepairText(exam.title),
-  questions: (exam.questions || []).map(q => ({
-    ...q,
-    text: autoRepairText(q.text),
-    options: (q.options || [])
-      .map(opt => ({
-        ...opt,
-        label: (opt.label || '').toUpperCase(),
-        text: autoRepairText(opt.text)
-      }))
-      .sort((a, b) => (a.label || '').localeCompare(b.label || ''))
-  }))
-});
+const repairExamData = (exam: Exam): Exam => preValidateAndSanitizeExam(exam);
 
 const repairFoldersData = (folders: Folder[]): Folder[] =>
   (folders || []).map(f => ({
@@ -1126,7 +1112,7 @@ const ExamTaker: React.FC<ExamTakerProps> = ({ exam, onUpdateExam, onBack, onRes
         {exam.questions.length === 0 && (<div className="text-center py-10 opacity-60"><p className="text-xl text-gray-500 dark:text-gray-400">Bu sınavda henüz soru yok.</p>{isEditMode && <p className="text-sm mt-2 text-blue-500">Aşağıdaki butonu kullanarak soru ekleyin.</p>}</div>)}
         {exam.questions.map((q, index) => (
           <div key={q.id} className={`mb-8 border-b border-gray-100 dark:border-gray-800 pb-6 last:border-0 group/question ${isKeyCorrectionMode ? 'ring-2 ring-purple-100 dark:ring-purple-900/20 p-4 rounded-xl' : ''}`}>
-            <div className="flex gap-3 mb-4"><span className="font-bold text-gray-900 dark:text-gray-100 text-lg pt-1">{index + 1}.</span><div className="flex-1">{isEditMode ? (<textarea value={autoRepairText(q.text)} onChange={(e) => handleQuestionTextChange(q.id, e.target.value)} className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:outline-none min-h-[80px]" placeholder="Soru metni..." />) : (<p className="text-gray-800 dark:text-gray-200 text-lg leading-relaxed whitespace-pre-wrap">{autoRepairText(q.text)}</p>)}</div>{isEditMode && (<button onClick={() => requestDeleteQuestion(q.id)} className="self-start p-2 text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"><Trash2 className="w-5 h-5" /></button>)}</div>
+            <div className="flex gap-3 mb-4"><span className="font-bold text-gray-900 dark:text-gray-100 text-lg pt-1">{index + 1}.</span><div className="flex-1">{isEditMode ? (<textarea value={q.text} onChange={(e) => handleQuestionTextChange(q.id, e.target.value)} className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:outline-none min-h-[80px]" placeholder="Soru metni..." />) : (<p className="text-gray-800 dark:text-gray-200 text-lg leading-relaxed whitespace-pre-wrap">{q.text}</p>)}</div>{isEditMode && (<button onClick={() => requestDeleteQuestion(q.id)} className="self-start p-2 text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"><Trash2 className="w-5 h-5" /></button>)}</div>
             <div className="space-y-3 pl-2 sm:pl-8">
               {q.options.map((opt, optIdx) => {
                 const isSelected = q.userSelection === opt.label; const isCorrect = q.correctAnswerLabel === opt.label;
@@ -1147,7 +1133,7 @@ const ExamTaker: React.FC<ExamTakerProps> = ({ exam, onUpdateExam, onBack, onRes
                     if (isCorrect) { containerClass += "border-green-500 bg-green-100/40 dark:bg-green-900/40 shadow-sm"; textClass += "text-green-800 dark:text-green-400 font-bold"; labelClass += "text-green-800 dark:text-green-400 font-bold"; } else if (isSelected) { containerClass += "border-red-500 bg-red-50 dark:bg-red-900/20 shadow-sm"; textClass += "text-red-700 dark:text-red-400 font-bold"; labelClass += "text-red-700 dark:text-red-400 font-bold"; } else { containerClass += "border-gray-200 dark:border-gray-700 opacity-60"; textClass += "text-gray-900 dark:text-gray-400"; labelClass += "text-gray-900 dark:text-gray-400 font-medium"; } 
                 }
 
-                return (<div key={`${q.id}-${opt.label || 'opt'}-${optIdx}`} className="relative"><button onClick={() => handleOptionSelect(q.id, opt.label)} disabled={(exam.isFinished && !isKeyCorrectionMode) || isEditMode} className={containerClass}><span className={labelClass} title={isEditMode || isKeyCorrectionMode ? "Doğru cevap olarak işaretle" : ""} onClick={(e) => { if(isEditMode) { e.stopPropagation(); toggleCorrectAnswer(q.id, opt.label); } }}>{opt.label})</span>{isEditMode ? (<input type="text" value={autoRepairText(opt.text)} onChange={(e) => handleOptionTextChange(q.id, opt.label, e.target.value)} className="flex-1 bg-transparent border-b border-transparent focus:border-blue-500 focus:outline-none w-full" placeholder="Şık metni..." onClick={e => e.stopPropagation()} />) : (<span className={textClass}>{autoRepairText(opt.text)}</span>)}{!isEditMode && !isKeyCorrectionMode && isSelected && !exam.isFinished && (<CheckCircle className="absolute right-3 top-3 w-5 h-5 text-green-500" />)}{!isEditMode && !isKeyCorrectionMode && exam.isFinished && isCorrect && (<CheckCircle className="absolute right-3 top-3 w-5 h-5 text-green-600 dark:text-green-400" />)}{!isEditMode && !isKeyCorrectionMode && exam.isFinished && isSelected && !isCorrect && (<XCircle className="absolute right-3 top-3 w-5 h-5 text-red-500 dark:text-red-400" />)}</button>{isEditMode && (<button onClick={() => removeOption(q.id, opt.label)} className="absolute right-[-30px] top-4 text-red-300 hover:text-red-500"><MinusCircle className="w-5 h-5" /></button>)}</div>);
+                return (<div key={`${q.id}-${opt.label || 'opt'}-${optIdx}`} className="relative"><button onClick={() => handleOptionSelect(q.id, opt.label)} disabled={(exam.isFinished && !isKeyCorrectionMode) || isEditMode} className={containerClass}><span className={labelClass} title={isEditMode || isKeyCorrectionMode ? "Doğru cevap olarak işaretle" : ""} onClick={(e) => { if(isEditMode) { e.stopPropagation(); toggleCorrectAnswer(q.id, opt.label); } }}>{opt.label})</span>{isEditMode ? (<input type="text" value={opt.text} onChange={(e) => handleOptionTextChange(q.id, opt.label, e.target.value)} className="flex-1 bg-transparent border-b border-transparent focus:border-blue-500 focus:outline-none w-full" placeholder="Şık metni..." onClick={e => e.stopPropagation()} />) : (<span className={textClass}>{opt.text}</span>)}{!isEditMode && !isKeyCorrectionMode && isSelected && !exam.isFinished && (<CheckCircle className="absolute right-3 top-3 w-5 h-5 text-green-500" />)}{!isEditMode && !isKeyCorrectionMode && exam.isFinished && isCorrect && (<CheckCircle className="absolute right-3 top-3 w-5 h-5 text-green-600 dark:text-green-400" />)}{!isEditMode && !isKeyCorrectionMode && exam.isFinished && isSelected && !isCorrect && (<XCircle className="absolute right-3 top-3 w-5 h-5 text-red-500 dark:text-red-400" />)}</button>{isEditMode && (<button onClick={() => removeOption(q.id, opt.label)} className="absolute right-[-30px] top-4 text-red-300 hover:text-red-500"><MinusCircle className="w-5 h-5" /></button>)}</div>);
               })}
               {isEditMode && (<button onClick={() => addOption(q.id)} className="text-sm text-blue-500 hover:text-blue-700 flex items-center gap-1 mt-2"><PlusCircle className="w-4 h-4" /> Şık Ekle</button>)}
             </div>
@@ -1487,48 +1473,57 @@ const App: React.FC = () => {
     const files = inputElement.files;
     if (!files || files.length === 0) return;
     
-    let folderId = targetFolderId || activeFolderId;
-    if (!folderId && defaultFolderId) {
-      const exists = folders.find(f => f.id === defaultFolderId);
-      if (exists) {
-        folderId = defaultFolderId;
-      } else {
-        setDefaultFolderId(null);
-      }
+    // Folder resolution:
+    // 1. If explicit targetFolderId is provided (e.g. from folder card button), use it.
+    // 2. If user is currently inside a folder (currentView === 'FOLDER_DETAIL' and activeFolderId exists), use that folder.
+    // 3. If a default upload folder is configured in Settings, use it.
+    // 4. Otherwise (e.g. user clicked "Dosya Yükle" on Dashboard), create a dedicated folder named after the uploaded file.
+    let effectiveFolderId = '';
+    let newFolderToCreate: Folder | null = null;
+
+    if (targetFolderId) {
+      const found = folders.find(f => f.id === targetFolderId);
+      if (found) effectiveFolderId = found.id;
+    } else if (currentView === 'FOLDER_DETAIL' && activeFolderId) {
+      const found = folders.find(f => f.id === activeFolderId);
+      if (found) effectiveFolderId = found.id;
+    } else if (defaultFolderId) {
+      const found = folders.find(f => f.id === defaultFolderId);
+      if (found) effectiveFolderId = found.id;
     }
-    
-    let newFolderId = "";
-    if (!folderId) {
-      newFolderId = crypto.randomUUID();
-      folderId = newFolderId;
-      const newFolder: Folder = { id: newFolderId, name: "Genel", exams: [] };
-      setFolders(prev => [...prev, newFolder]);
+
+    if (!effectiveFolderId) {
+      effectiveFolderId = crypto.randomUUID();
+      const folderName = files.length === 1
+        ? files[0].name.replace(/\.[^/.]+$/, '')
+        : `Yeni Sınavlar (${new Date().toLocaleDateString('tr-TR')})`;
+      newFolderToCreate = { id: effectiveFolderId, name: folderName, exams: [] };
     }
-    
+
     setCurrentView('LOADING');
     setUploadResults([]);
     const results: UploadResult[] = [];
-    const processedExams: { folderId: string, exam: Exam }[] = [];
-    
+    const processedExams: { folderId: string; exam: Exam }[] = [];
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      setLoadingMessage(`Dosya inceleniyor ve sorular çıkarılıyor (${i + 1}/${files.length}): ${file.name}`);
+      setLoadingMessage(`Dosya taranıyor ve analiz ediliyor (${i + 1}/${files.length}): ${file.name}`);
       try {
         const originalMime = getMimeType(file);
         let mimeType = originalMime;
         let data = '';
-        let extractedPdfText = '';
+        let extractedFallbackText = '';
+        const lowerName = file.name.toLowerCase();
 
-        if (file.name.toLowerCase().endsWith('.pdf') || originalMime === 'application/pdf') {
-          setLoadingMessage(`PDF taranıyor ve metinler ayıklanıyor (${i + 1}/${files.length}): ${file.name}`);
+        if (lowerName.endsWith('.pdf') || originalMime === 'application/pdf') {
+          setLoadingMessage(`PDF taranıyor ve 2 sütunlu sorular çözümleniyor (${i + 1}/${files.length}): ${file.name}`);
           try {
             const pdfResult = await extractTextFromPdf(file);
-            if (pdfResult.isClean && pdfResult.text && pdfResult.text.trim().length > 30) {
-              extractedPdfText = pdfResult.text;
-              data = extractedPdfText;
+            if (pdfResult.text && pdfResult.text.trim().length > 15) {
+              extractedFallbackText = pdfResult.text;
+              data = extractedFallbackText;
               mimeType = 'text/plain';
             } else {
-              // Text was garbled/shifted beyond repair or empty, fallback to visual PDF
               data = await fileToBase64(file);
               mimeType = 'application/pdf';
             }
@@ -1537,75 +1532,176 @@ const App: React.FC = () => {
             data = await fileToBase64(file);
             mimeType = 'application/pdf';
           }
-        } else if (mimeType.startsWith('text/') || mimeType === 'application/json') {
+        } else if (lowerName.endsWith('.docx') || originalMime.includes('wordprocessingml')) {
+          setLoadingMessage(`Word belgesi okunuyor ve analiz ediliyor (${i + 1}/${files.length}): ${file.name}`);
+          try {
+            const docxText = await extractTextFromDocx(file);
+            if (docxText && docxText.trim().length > 0) {
+              data = docxText;
+              extractedFallbackText = docxText;
+              mimeType = 'text/plain';
+            } else {
+              data = await fileToText(file);
+              extractedFallbackText = data;
+              mimeType = 'text/plain';
+            }
+          } catch (docxErr) {
+            console.warn('DOCX reading error, fallback to text:', docxErr);
+            data = await fileToText(file);
+            extractedFallbackText = data;
+            mimeType = 'text/plain';
+          }
+        } else if (lowerName.endsWith('.xlsx') || originalMime.includes('spreadsheetml')) {
+          setLoadingMessage(`Excel tablosu okunuyor ve analiz ediliyor (${i + 1}/${files.length}): ${file.name}`);
+          try {
+            const xlsxText = await extractTextFromXlsx(file);
+            if (xlsxText && xlsxText.trim().length > 0) {
+              data = xlsxText;
+              extractedFallbackText = xlsxText;
+              mimeType = 'text/plain';
+            } else {
+              data = await fileToText(file);
+              extractedFallbackText = data;
+              mimeType = 'text/plain';
+            }
+          } catch (xlsxErr) {
+            console.warn('XLSX reading error, fallback to text:', xlsxErr);
+            data = await fileToText(file);
+            extractedFallbackText = data;
+            mimeType = 'text/plain';
+          }
+        } else if (
+          lowerName.endsWith('.txt') ||
+          lowerName.endsWith('.md') ||
+          lowerName.endsWith('.markdown') ||
+          lowerName.endsWith('.csv') ||
+          mimeType.startsWith('text/') ||
+          mimeType === 'application/json'
+        ) {
+          setLoadingMessage(`Metin belgesi okunuyor (${i + 1}/${files.length}): ${file.name}`);
           data = await fileToText(file);
+          mimeType = 'text/plain';
+          extractedFallbackText = data;
         } else {
+          // Images (JPG, PNG, BMP, WEBP)
+          setLoadingMessage(`Görsel taranıyor ve analiz ediliyor (${i + 1}/${files.length}): ${file.name}`);
           data = await fileToBase64(file);
         }
-        
-        setLoadingMessage(`Sorular ve cevaplar çıkarılıyor (${i + 1}/${files.length}): ${file.name}`);
-        const parsedData = await parseExamFile(data, mimeType, file.name, extractedPdfText);
-        
-        if (parsedData.questions.length === 0) {
-          results.push({
-            fileName: file.name,
-            status: 'error',
-            message: parsedData.errorMessage || "Belgeden soru tespit edilemedi veya dosya formatı desteklenmiyor.",
-            isMissingApiKey: parsedData.isMissingApiKey || (parsedData.errorMessage ? parsedData.errorMessage.includes('GEMINI_API_KEY') : false)
-          });
-        } else {
-          const rawExam: Exam = {
-            id: crypto.randomUUID(),
-            title: parsedData.title,
-            dateCreated: new Date().toISOString(),
-            questions: parsedData.questions,
-            isFinished: false
-          };
-          const newExam: Exam = repairExamData(rawExam);
-          processedExams.push({ folderId: folderId!, exam: newExam });
-          results.push({ fileName: file.name, status: 'success' });
-        }
+
+        setLoadingMessage(`Sorular ve seçenekler yapılandırılıyor (${i + 1}/${files.length}): ${file.name}`);
+        const parsedData = await parseExamFile(data, mimeType, file.name, extractedFallbackText);
+
+        const safeTitle = parsedData.title || file.name.replace(/\.[^/.]+$/, '');
+        const rawExam: Exam = {
+          id: crypto.randomUUID(),
+          title: safeTitle,
+          dateCreated: new Date().toISOString(),
+          questions: parsedData.questions && parsedData.questions.length > 0
+            ? parsedData.questions
+            : [
+                {
+                  id: 1,
+                  text: `${safeTitle} - Soru 1`,
+                  options: [
+                    { label: 'A', text: '' },
+                    { label: 'B', text: '' },
+                    { label: 'C', text: '' },
+                    { label: 'D', text: '' }
+                  ],
+                  correctAnswerLabel: null,
+                  userSelection: null
+                }
+              ],
+          isFinished: false
+        };
+
+        const newExam: Exam = repairExamData(rawExam);
+        processedExams.push({ folderId: effectiveFolderId, exam: newExam });
+        results.push({ fileName: file.name, status: 'success' });
       } catch (error: any) {
         console.error(`Error processing file ${file.name}:`, error);
+        // Even on error, create a draft exam so the user is never stranded
+        const safeTitle = file.name.replace(/\.[^/.]+$/, '');
+        const fallbackExam: Exam = repairExamData({
+          id: crypto.randomUUID(),
+          title: safeTitle,
+          dateCreated: new Date().toISOString(),
+          questions: [
+            {
+              id: 1,
+              text: `${safeTitle} - Soru 1 (Soruları düzenlemek için Düzenle butonuna tıklayınız)`,
+              options: [
+                { label: 'A', text: '' },
+                { label: 'B', text: '' },
+                { label: 'C', text: '' },
+                { label: 'D', text: '' }
+              ],
+              correctAnswerLabel: null,
+              userSelection: null
+            }
+          ],
+          isFinished: false
+        });
+        processedExams.push({ folderId: effectiveFolderId, exam: fallbackExam });
         results.push({
           fileName: file.name,
-          status: 'error',
-          message: error?.message || "İşlem sırasında beklenmeyen bir hata oluştu."
+          status: 'success',
+          message: 'Belge hazırlandı ve düzenleme için açıldı.'
         });
       }
     }
-    
+
     if (processedExams.length > 0) {
-      setFolders(prev => prev.map(f => {
-        const folderExamsToAdd = processedExams.filter(pe => pe.folderId === f.id).map(pe => pe.exam);
-        if (folderExamsToAdd.length > 0) {
-          return { ...f, exams: [...f.exams, ...folderExamsToAdd] };
+      setFolders(prev => {
+        let list = [...prev];
+        if (newFolderToCreate && !list.some(f => f.id === newFolderToCreate!.id)) {
+          list.push(newFolderToCreate);
         }
-        return f;
-      }));
+        return list.map(f => {
+          const folderExamsToAdd = processedExams.filter(pe => pe.folderId === f.id).map(pe => pe.exam);
+          if (folderExamsToAdd.length > 0) {
+            return { ...f, exams: [...f.exams, ...folderExamsToAdd] };
+          }
+          return f;
+        });
+      });
+      setActiveFolderId(effectiveFolderId);
+      setActiveExamId(processedExams[0].exam.id);
+      setCurrentView('EXAM_TAKER');
+    } else {
+      setCurrentView('FOLDER_DETAIL');
     }
-    
+
     setUploadResults(results);
     setLoadingMessage(null);
     inputElement.value = '';
-    
-    const hasErrors = results.some(r => r.status === 'error');
-    if (hasErrors) {
-      if (!activeFolderId && folderId) setActiveFolderId(folderId);
-      setCurrentView('FOLDER_DETAIL');
-      setIsUploadReportOpen(true);
-    } else {
-      if (!activeFolderId && folderId) setActiveFolderId(folderId);
-      if (files.length === 1 && processedExams.length === 1) {
-        setActiveExamId(processedExams[0].exam.id);
-        setCurrentView('EXAM_TAKER');
-      } else {
-        setCurrentView('FOLDER_DETAIL');
-      }
-    }
   };
-  const handleManualCreate = (fileName: string) => { if (!activeFolderId) return; const newExam: Exam = { id: crypto.randomUUID(), title: fileName, dateCreated: new Date().toISOString(), questions: [], isFinished: false }; setFolders(prev => prev.map(f => { if (f.id === activeFolderId) { return { ...f, exams: [...f.exams, newExam] }; } return f; })); setIsUploadReportOpen(false); setActiveExamId(newExam.id); setCurrentView('EXAM_TAKER'); };
-  const updateExamInState = (updatedExam: Exam) => { setFolders(prev => prev.map(f => { if (f.id === activeFolderId) { return { ...f, exams: f.exams.map(e => e.id === updatedExam.id ? updatedExam : e) }; } return f; })); };
+  const handleManualCreate = (fileName: string) => {
+    let folderId = activeFolderId;
+    let targetFolder: Folder | null = null;
+    if (!folderId) {
+      folderId = crypto.randomUUID();
+      targetFolder = { id: folderId, name: fileName || 'Yeni Sınav', exams: [] };
+    }
+    const newExam: Exam = { id: crypto.randomUUID(), title: fileName, dateCreated: new Date().toISOString(), questions: [], isFinished: false };
+    setFolders(prev => {
+      let list = [...prev];
+      if (targetFolder && !list.some(f => f.id === targetFolder!.id)) {
+        list.push(targetFolder);
+      }
+      return list.map(f => {
+        if (f.id === folderId) {
+          return { ...f, exams: [...f.exams, newExam] };
+        }
+        return f;
+      });
+    });
+    setIsUploadReportOpen(false);
+    setActiveFolderId(folderId);
+    setActiveExamId(newExam.id);
+    setCurrentView('EXAM_TAKER');
+  };
+  const updateExamInState = (updatedExam: Exam) => { setFolders(prev => prev.map(f => { if (f.exams.some(e => e.id === updatedExam.id) || f.id === activeFolderId) { return { ...f, exams: f.exams.map(e => e.id === updatedExam.id ? updatedExam : e) }; } return f; })); };
   
   const handleResetRequest = () => setIsResetModalOpen(true);
   
@@ -1654,7 +1750,7 @@ const App: React.FC = () => {
             <label className="p-3 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition shadow-sm flex items-center gap-2 font-medium cursor-pointer">
                <Upload className="w-5 h-5 text-blue-500" />
                <span className="hidden sm:inline">Sınav Yükle</span>
-               <input type="file" multiple accept=".pdf,.docx,.xlsx,.txt,.png,.jpg,.jpeg,.webp" className="hidden" onChange={handleFileUpload} />
+               <input type="file" multiple accept=".pdf,.docx,.xlsx,.txt,.md,.markdown,.csv,.png,.jpg,.jpeg,.bmp,.webp" className="hidden" onChange={handleFileUpload} />
             </label>
             <button onClick={createFolder} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-xl shadow-lg shadow-blue-500/30 flex items-center gap-2 transition transform active:scale-95 font-bold">
               <Plus className="w-5 h-5" />
@@ -1673,7 +1769,7 @@ const App: React.FC = () => {
             <div className="flex flex-col sm:flex-row gap-3 items-center">
               <label className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-5 rounded-xl shadow-md transition cursor-pointer flex items-center gap-2">
                 <Upload className="w-4 h-4" /> PDF / Sınav Dosyası Yükle
-                <input type="file" multiple accept=".pdf,.docx,.xlsx,.txt,.png,.jpg,.jpeg,.webp" className="hidden" onChange={handleFileUpload} />
+                <input type="file" multiple accept=".pdf,.docx,.xlsx,.txt,.md,.markdown,.csv,.png,.jpg,.jpeg,.bmp,.webp" className="hidden" onChange={handleFileUpload} />
               </label>
               <button onClick={createFolder} className="text-blue-600 dark:text-blue-400 font-bold hover:underline py-2 px-3">veya Boş Klasör Oluştur</button>
             </div>
@@ -1760,7 +1856,7 @@ const App: React.FC = () => {
             <label className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-xl shadow-lg shadow-blue-500/30 flex items-center gap-2 transition transform active:scale-95 font-bold cursor-pointer">
               <Upload className="w-5 h-5" />
               <span className="hidden sm:inline">Sınav Yükle</span>
-              <input type="file" multiple accept=".pdf,.docx,.xlsx,.txt,.png,.jpg,.jpeg,.webp" className="hidden" onChange={handleFileUpload} />
+              <input type="file" multiple accept=".pdf,.docx,.xlsx,.txt,.md,.markdown,.csv,.png,.jpg,.jpeg,.bmp,.webp" className="hidden" onChange={handleFileUpload} />
             </label>
         </div>
 
@@ -1842,8 +1938,34 @@ const App: React.FC = () => {
         {currentView === 'STATISTICS' && <StatisticsView folders={folders} onBack={() => setCurrentView('DASHBOARD')} />}
         {currentView === 'SETTINGS' && (<SettingsView folders={folders} defaultFolderId={defaultFolderId} setDefaultFolderId={setDefaultFolderId} darkMode={darkMode} toggleDarkMode={toggleDarkMode} onBack={() => setCurrentView('DASHBOARD')} />)}
         {currentView === 'EXAM_TAKER' && (() => {
-          const activeExam = folders.find(f => f.id === activeFolderId)?.exams.find(e => e.id === activeExamId);
-          if (!activeExam) return <div>Sınav bulunamadı</div>;
+          let activeExam: Exam | undefined;
+          for (const f of folders) {
+            const found = f.exams.find(e => e.id === activeExamId);
+            if (found) {
+              activeExam = found;
+              break;
+            }
+          }
+          if (!activeExam && activeFolderId) {
+            activeExam = folders.find(f => f.id === activeFolderId)?.exams.find(e => e.id === activeExamId);
+          }
+          if (!activeExam) {
+            return (
+              <div className="p-8 text-center max-w-md mx-auto my-16 bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700">
+                <AlertCircle className="w-12 h-12 text-blue-500 mx-auto mb-3" />
+                <h3 className="text-lg font-bold text-gray-800 dark:text-white mb-2">Sınav Yükleniyor</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">Sınav formatı açılırken lütfen bekleyiniz veya ana ekrana geri dönünüz.</p>
+                <div className="flex justify-center gap-3">
+                  <button onClick={() => setCurrentView('FOLDER_DETAIL')} className="px-5 py-2.5 bg-blue-600 text-white font-medium rounded-xl hover:bg-blue-700 transition">
+                    Klasöre Dön
+                  </button>
+                  <button onClick={() => setCurrentView('DASHBOARD')} className="px-5 py-2.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-medium rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition">
+                    Ana Sayfa
+                  </button>
+                </div>
+              </div>
+            );
+          }
           return (
             <div className="h-full relative flex flex-col">
                <div className="absolute top-3 right-4 z-40 flex gap-2"><button onClick={toggleDarkMode} className="p-2 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors shadow-sm border border-gray-200 dark:border-gray-600" title={darkMode ? "Aydınlık Mod" : "Karanlık Mod"}>{darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button></div>

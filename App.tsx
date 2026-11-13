@@ -65,9 +65,11 @@ interface ServerConfigModalProps {
     onClose: () => void;
     onSave: (config: SupabaseConfig) => void;
     initialConfig: SupabaseConfig;
+    darkMode: boolean;
+    toggleDarkMode: () => void;
 }
 
-const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ isOpen, onClose, onSave, initialConfig }) => {
+const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ isOpen, onClose, onSave, initialConfig, darkMode, toggleDarkMode }) => {
     const [config, setConfig] = useState<SupabaseConfig>(initialConfig);
     const [step, setStep] = useState(1);
     const [validationError, setValidationError] = useState('');
@@ -131,13 +133,22 @@ create policy "Public profiles" on profiles for all using ( auth.uid() = id );
             <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-2xl w-full animate-in fade-in zoom-in duration-200 border-t-4 border-green-500 transition-colors flex flex-col max-h-[85dvh]">
                 
                 {/* Header - Fixed */}
-                <div className="p-6 pb-2 flex-shrink-0">
-                    <div className="flex items-center gap-3 mb-2">
+                <div className="p-6 pb-2 flex-shrink-0 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
                         <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-full text-green-600 dark:text-green-400">
                             <Database className="w-6 h-6" />
                         </div>
                         <h3 className="text-xl font-bold text-gray-900 dark:text-white">Bulut Veritabanı</h3>
                     </div>
+                    <button
+                        type="button"
+                        onClick={toggleDarkMode}
+                        className="p-2 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center gap-2 text-xs font-medium flex-shrink-0"
+                        title={darkMode ? "Aydınlık Mod" : "Karanlık Mod"}
+                    >
+                        {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+                        <span className="hidden sm:inline">{darkMode ? "Aydınlık Mod" : "Karanlık Mod"}</span>
+                    </button>
                 </div>
 
                 {/* Body - Scrollable */}
@@ -1906,7 +1917,7 @@ const App: React.FC = () => {
     );
   };
 
-  if (!currentUser) { return (<> <div className="absolute top-4 right-4 z-50"><button onClick={toggleDarkMode} className="p-2 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors" title={darkMode ? "Aydınlık Mod" : "Karanlık Mod"}>{darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button></div><ServerConfigModal isOpen={isServerModalOpen} onClose={() => setIsServerModalOpen(false)} onSave={handleServerConfigSave} initialConfig={supabaseConfig} /><LoginScreen onLogin={handleLogin} onOpenServerSettings={() => setIsServerModalOpen(true)} isCloudConfigured={isValidSupabaseConfig(supabaseConfig) && isSupabaseInitialized()}/></>); }
+  if (!currentUser) { return (<><ServerConfigModal isOpen={isServerModalOpen} onClose={() => setIsServerModalOpen(false)} onSave={handleServerConfigSave} initialConfig={supabaseConfig} darkMode={darkMode} toggleDarkMode={toggleDarkMode} /><LoginScreen onLogin={handleLogin} onOpenServerSettings={() => setIsServerModalOpen(true)} isCloudConfigured={isValidSupabaseConfig(supabaseConfig) && isSupabaseInitialized()}/></>); }
   if (currentView === 'LOADING') { return <LoadingScreen message={loadingMessage || undefined} />; }
   
   const examToDeleteTitle = examToDeleteId ? folders.find(f => f.id === activeFolderId)?.exams.find(e => e.id === examToDeleteId)?.title : "";
